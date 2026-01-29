@@ -27,6 +27,7 @@ type Store interface {
 	CreateCompany(name string) (*model.Company, error)
 	UpdateProjectMaturity(projectID uint, maturity model.Maturity) error
 	UpdateProjectLegacyMaintainerRef(projectID uint, ref string) error
+	UpdateProjectParentProjectID(projectID uint, parentProjectID *uint) error
 	UpdateMaintainerStatus(maintainerID uint, status model.MaintainerStatus) error
 	UpdateMaintainersStatus(ids []uint, status model.MaintainerStatus) error
 	UpdateMaintainerGitHubEmail(maintainerID uint, githubEmail string) error

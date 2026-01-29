@@ -28,6 +28,11 @@ type ServiceSummary = {
   description: string;
 };
 
+type ProjectSuggestion = {
+  id: number;
+  name: string;
+};
+
 export type AddMaintainerPayload = {
   name: string;
   githubHandle: string;
@@ -50,6 +55,7 @@ type ProjectReconciliationCardProps = {
   refLines?: Record<string, string>;
   refOnlyGitHub: string[];
   companyOptions?: string[];
+  parentProjectId?: number | null;
   onboardingIssue?: string | null;
   mailingList?: string | null;
   maintainers: MaintainerSummary[];
@@ -58,12 +64,14 @@ type ProjectReconciliationCardProps = {
   updatedAt?: string | null;
   updatedBy?: string | null;
   updatedAuditId?: number | null;
+  apiBaseUrl?: string;
   onUpdateMaturity?: (next: string) => Promise<void>;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   canEdit?: boolean;
   onAddMaintainer?: (payload: AddMaintainerPayload) => Promise<void>;
   onUpdateMaintainerRef?: (ref: string) => Promise<void>;
+  onUpdateParentProject?: (parentProjectId: number | null) => Promise<void>;
   onBulkStatusChange?: (ids: number[], status: string) => Promise<void>;
 };
 
@@ -131,17 +139,20 @@ export default function ProjectReconciliationCard({
   refLines,
   refOnlyGitHub,
   companyOptions = [],
+  parentProjectId,
   maintainers,
   createdAt,
   updatedAt,
   updatedBy,
   updatedAuditId,
+  apiBaseUrl,
   onUpdateMaturity,
   onRefresh,
   isRefreshing,
   canEdit = false,
   onAddMaintainer,
   onUpdateMaintainerRef,
+  onUpdateParentProject,
   onBulkStatusChange,
 }: ProjectReconciliationCardProps) {
   const refStatus = maintainerRefStatus?.status || "missing";
@@ -316,6 +327,13 @@ export default function ProjectReconciliationCard({
   const [refError, setRefError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<string>("legacy");
   const [refEditing, setRefEditing] = useState(false);
+  const [parentQuery, setParentQuery] = useState("");
+  const [parentSuggestions, setParentSuggestions] = useState<ProjectSuggestion[]>([]);
+  const [parentHighlightIndex, setParentHighlightIndex] = useState(-1);
+  const [parentSaving, setParentSaving] = useState(false);
+  const [parentError, setParentError] = useState<string | null>(null);
+  const [parentSelection, setParentSelection] = useState<ProjectSuggestion | null>(null);
+  const [currentParentName, setCurrentParentName] = useState<string | null>(null);
   const [maturityModalOpen, setMaturityModalOpen] = useState(false);
   const [maturitySaving, setMaturitySaving] = useState(false);
   const [maturityError, setMaturityError] = useState<string | null>(null);
@@ -325,6 +343,106 @@ export default function ProjectReconciliationCard({
     }
   }, [isRefBroken, refEditing, refInput, refUrl]);
 
+  useEffect(() => {
+    if (!apiBaseUrl || !parentProjectId) {
+      setCurrentParentName(null);
+      return;
+    }
+    let alive = true;
+    const loadParent = async () => {
+      try {
+        const response = await fetch(`${apiBaseUrl}/projects/${parentProjectId}`, {
+          credentials: "include",
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as { name?: string };
+        if (alive) {
+          setCurrentParentName((data.name || "").trim() || null);
+        }
+      } catch {
+        // Ignore.
+      }
+    };
+    void loadParent();
+    return () => {
+      alive = false;
+    };
+  }, [apiBaseUrl, parentProjectId]);
+
+  useEffect(() => {
+    const query = parentQuery.trim();
+    if (!apiBaseUrl || query === "") {
+      setParentSuggestions([]);
+      setParentHighlightIndex(-1);
+      return;
+    }
+    const controller = new AbortController();
+    const handle = window.setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `${apiBaseUrl}/projects?namePrefix=${encodeURIComponent(query)}&limit=12&offset=0`,
+          { credentials: "include", signal: controller.signal }
+        );
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as { projects?: ProjectSuggestion[] };
+        const queryLower = query.toLowerCase();
+        const nextSuggestions = (data.projects || []).filter((project) =>
+          project.name.toLowerCase().startsWith(queryLower)
+        );
+        setParentSuggestions(nextSuggestions);
+        setParentHighlightIndex(nextSuggestions.length > 0 ? 0 : -1);
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          return;
+        }
+        setParentSuggestions([]);
+        setParentHighlightIndex(-1);
+      }
+    }, 300);
+    return () => {
+      controller.abort();
+      window.clearTimeout(handle);
+    };
+  }, [apiBaseUrl, parentQuery]);
+
+  const handleParentSelect = (project: ProjectSuggestion) => {
+    setParentSelection(project);
+    setParentQuery(project.name);
+    setParentSuggestions([]);
+    setParentHighlightIndex(-1);
+    setParentError(null);
+  };
+
+  const handleParentKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (parentSuggestions.length === 0) {
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setParentHighlightIndex((current) => {
+        const next = current + 1;
+        return next >= parentSuggestions.length ? 0 : next;
+      });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setParentHighlightIndex((current) => {
+        const next = current - 1;
+        return next < 0 ? parentSuggestions.length - 1 : next;
+      });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const selected =
+        parentHighlightIndex >= 0 ? parentSuggestions[parentHighlightIndex] : null;
+      if (selected) {
+        handleParentSelect(selected);
+      }
+    }
+  };
+
   const dotProjectSection = (
     <div className={styles.section}>
       <h3 className={styles.subSectionTitle}>Proposed dot project.yaml</h3>
@@ -333,6 +451,117 @@ export default function ProjectReconciliationCard({
         <code>project.yaml</code> that projects can check in for GitOps-friendly maintainer rosters, mailing lists, and
         service metadata.
       </p>
+      <div className={styles.parentProject}>
+        <h3 className={styles.subSectionTitle}>Parent Project</h3>
+        <div className={styles.parentCurrent}>
+          {parentProjectId ? (
+            <Link className={styles.parentLink} href={`/projects/${parentProjectId}`}>
+              {currentParentName || `Project #${parentProjectId}`}
+            </Link>
+          ) : (
+            <span className={styles.parentEmpty}>No parent project set.</span>
+          )}
+        </div>
+        {canEdit && onUpdateParentProject ? (
+          <div className={styles.parentField}>
+            <input
+              className={styles.parentInput}
+              value={parentQuery}
+              onChange={(event) => {
+                setParentQuery(event.target.value);
+                setParentSelection(null);
+                setParentError(null);
+              }}
+              onKeyDown={handleParentKeyDown}
+              placeholder="Search for a parent project"
+            />
+            {parentQuery.trim() !== "" ? (
+              <div className={styles.parentPopup} role="listbox">
+                <div className={styles.parentList}>
+                  {parentSuggestions.length > 0 ? (
+                    parentSuggestions.map((project, index) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        className={`${styles.parentOption} ${
+                          index === parentHighlightIndex ? styles.parentOptionActive : ""
+                        }`}
+                        onClick={() => handleParentSelect(project)}
+                        role="option"
+                        aria-selected={index === parentHighlightIndex}
+                      >
+                        {project.name}
+                      </button>
+                    ))
+                  ) : (
+                    <div className={styles.parentEmpty}>No matching projects.</div>
+                  )}
+                </div>
+              </div>
+            ) : null}
+            <div className={styles.parentActions}>
+              <button
+                className={styles.parentSave}
+                type="button"
+                disabled={parentSaving || !parentSelection}
+                onClick={async () => {
+                  if (!onUpdateParentProject || !parentSelection) {
+                    setParentError("Select a parent project.");
+                    return;
+                  }
+                  setParentSaving(true);
+                  setParentError(null);
+                  try {
+                    await onUpdateParentProject(parentSelection.id);
+                    setParentQuery("");
+                    setParentSelection(null);
+                    setCurrentParentName(parentSelection.name);
+                    if (onRefresh) {
+                      onRefresh();
+                    }
+                  } catch {
+                    setParentError("Unable to update parent project.");
+                  } finally {
+                    setParentSaving(false);
+                  }
+                }}
+              >
+                {parentSaving ? "Saving..." : "Save Parent"}
+              </button>
+              {parentProjectId ? (
+                <button
+                  className={styles.parentClear}
+                  type="button"
+                  disabled={parentSaving}
+                  onClick={async () => {
+                    if (!onUpdateParentProject) {
+                      return;
+                    }
+                    setParentSaving(true);
+                    setParentError(null);
+                    try {
+                      await onUpdateParentProject(null);
+                      setParentQuery("");
+                      setParentSelection(null);
+                      setCurrentParentName(null);
+                      if (onRefresh) {
+                        onRefresh();
+                      }
+                    } catch {
+                      setParentError("Unable to clear parent project.");
+                    } finally {
+                      setParentSaving(false);
+                    }
+                  }}
+                >
+                  Clear Parent
+                </button>
+              ) : null}
+            </div>
+            {parentError ? <div className={styles.parentError}>{parentError}</div> : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 
@@ -518,7 +747,7 @@ export default function ProjectReconciliationCard({
 
   const menuItems = [
     { id: "legacy", label: "MAINTAINER ROLL CALL" },
-    { id: "dot-project", label: "PROJECT RECORDS / DOT PROJECT YAML" },
+    { id: "dot-project", label: "PROJECT STRUCTURE" },
     { id: "license-checker", label: "SERVICES / LICENSE CHECKER" },
     { id: "mailing-maintainers", label: "SERVICES / MAILING LISTS / MAINTAINERS" },
     { id: "mailing-security", label: "SERVICES / MAILING LISTS / SECURITY" },

@@ -307,6 +307,8 @@ export default function ProjectPage() {
               updatedAt={project.updatedAt}
               updatedBy={project.updatedBy}
               updatedAuditId={project.updatedAuditId}
+              parentProjectId={project.parentProjectId}
+              apiBaseUrl={apiBaseUrl}
               onRefresh={handleRefresh}
               isRefreshing={status === "loading"}
               canEdit={role === "staff"}
@@ -323,6 +325,22 @@ export default function ProjectPage() {
                 });
                 if (!response.ok) {
                   setError("Unable to update project status");
+                  throw new Error("update failed");
+                }
+                await handleRefresh();
+              }}
+              onUpdateParentProject={async (nextParentId) => {
+                if (!projectId) {
+                  return;
+                }
+                const response = await fetch(`${apiBaseUrl}/projects/${projectId}/parent`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "include",
+                  body: JSON.stringify({ parentProjectId: nextParentId }),
+                });
+                if (!response.ok) {
+                  setError("Unable to update parent project");
                   throw new Error("update failed");
                 }
                 await handleRefresh();

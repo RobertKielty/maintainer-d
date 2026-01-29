@@ -966,6 +966,10 @@ func (s *server) handleRecentProjects(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleProject(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPatch {
+		if strings.HasSuffix(r.URL.Path, "/parent") {
+			s.handleProjectParentUpdate(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/maturity") {
 			s.handleProjectMaturityUpdate(w, r)
 			return
@@ -1320,8 +1324,107 @@ type projectMaintainerRefUpdateRequest struct {
 	LegacyMaintainerRef string `json:"legacyMaintainerRef"`
 }
 
+type projectParentUpdateRequest struct {
+	ParentProjectID *uint `json:"parentProjectId"`
+}
+
 type projectMaturityUpdateRequest struct {
 	Maturity string `json:"maturity"`
+}
+
+func (s *server) handleProjectParentUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	trimmed := strings.TrimSuffix(r.URL.Path, "/parent")
+	id, err := parseIDParam(trimmed, "/api/projects/")
+	if err != nil {
+		http.Error(w, "invalid project id", http.StatusBadRequest)
+		return
+	}
+	session := sessionFromContext(r.Context())
+	if session == nil || session.Role != roleStaff {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req projectParentUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if req.ParentProjectID != nil && *req.ParentProjectID == id {
+		http.Error(w, "parent project cannot reference itself", http.StatusBadRequest)
+		return
+	}
+	beforeProject, beforeErr := s.store.GetProjectByID(id)
+	if beforeErr != nil {
+		if errors.Is(beforeErr, db.ErrProjectNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		s.logger.Printf("web-bff: load project before parent update failed id=%d err=%v", id, beforeErr)
+		http.Error(w, "failed to update project", http.StatusInternalServerError)
+		return
+	}
+	if req.ParentProjectID != nil {
+		if _, err := s.store.GetProjectByID(*req.ParentProjectID); err != nil {
+			if errors.Is(err, db.ErrProjectNotFound) {
+				http.Error(w, "parent project not found", http.StatusBadRequest)
+				return
+			}
+			s.logger.Printf("web-bff: parent lookup failed id=%d parent=%d err=%v", id, *req.ParentProjectID, err)
+			http.Error(w, "failed to update project", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.store.UpdateProjectParentProjectID(id, req.ParentProjectID); err != nil {
+		if errors.Is(err, db.ErrProjectNotFound) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
+		s.logger.Printf("web-bff: update parent failed id=%d err=%v", id, err)
+		http.Error(w, "failed to update project", http.StatusInternalServerError)
+		return
+	}
+	var staffID *uint
+	staffName := ""
+	if session.Login != "" {
+		var staff model.StaffMember
+		if err := s.store.DB().
+			Where("LOWER(git_hub_account) = ?", strings.ToLower(session.Login)).
+			First(&staff).Error; err == nil {
+			staffID = &staff.ID
+			staffName = staff.Name
+		}
+	}
+	if staffName == "" {
+		staffName = session.Login
+	}
+	changes := map[string]map[string]string{
+		"parentProjectId": {
+			"from": fmt.Sprintf("%v", beforeProject.ParentProjectID),
+			"to":   fmt.Sprintf("%v", req.ParentProjectID),
+		},
+	}
+	if metadataJSON, err := json.Marshal(changes); err == nil {
+		event := model.AuditLog{
+			StaffID:   staffID,
+			Action:    "PROJECT_PARENT_UPDATE",
+			Message:   fmt.Sprintf("Parent project updated by %s", staffName),
+			Metadata:  string(metadataJSON),
+			ProjectID: &beforeProject.ID,
+		}
+		if err := s.store.DB().Create(&event).Error; err != nil {
+			s.logger.Printf("web-bff: parent update audit log failed: %v", err)
+		}
+	}
+	w.Header().Set(headerContentType, contentTypeJSON)
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"parentProjectId": req.ParentProjectID,
+	}); err != nil {
+		s.logger.Printf("web-bff: parent update encode error: %v", err)
+	}
 }
 
 func (s *server) handleProjectMaintainerRefUpdate(w http.ResponseWriter, r *http.Request) {

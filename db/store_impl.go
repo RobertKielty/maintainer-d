@@ -105,6 +105,19 @@ func (s *SQLStore) UpdateProjectMaturity(projectID uint, maturity model.Maturity
 	return nil
 }
 
+func (s *SQLStore) UpdateProjectParentProjectID(projectID uint, parentProjectID *uint) error {
+	result := s.db.Model(&model.Project{}).
+		Where("id = ?", projectID).
+		Update("parent_project_id", parentProjectID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrProjectNotFound
+	}
+	return nil
+}
+
 func (s *SQLStore) CreateMaintainer(projectID uint, name, email, githubHandle, company string) (*model.Maintainer, error) {
 	tx := s.db.Begin()
 	if tx.Error != nil {
