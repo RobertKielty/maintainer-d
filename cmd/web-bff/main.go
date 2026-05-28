@@ -5515,7 +5515,7 @@ func (s *server) fetchOnboardingIssuesFromGitHub(ctx context.Context) ([]onboard
 	client := github.NewClient(oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{
 		AccessToken: s.githubToken,
 	})))
-	query := `repo:cncf/sandbox is:issue state:open label:"project onboarding"`
+	query := `repo:cncf/sandbox is:issue state:open "[PROJECT ONBOARDING]" in:title sort:created-desc`
 	options := &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	issues := make([]onboardingIssueSummary, 0, 128)
 	for {
