@@ -4834,49 +4834,51 @@ type lfxEnrichmentRunStatus string
 const (
 	lfxRunRunning   lfxEnrichmentRunStatus = "running"
 	lfxRunSucceeded lfxEnrichmentRunStatus = "succeeded"
+	lfxRunDegraded  lfxEnrichmentRunStatus = "degraded"
 	lfxRunFailed    lfxEnrichmentRunStatus = "failed"
 )
 
 type lfxEnrichmentRun struct {
-	ID                 string                 `json:"id"`
-	Status             lfxEnrichmentRunStatus `json:"status"`
-	RequestedBy        string                 `json:"requestedBy"`
-	CreatedAt          time.Time              `json:"createdAt"`
-	StartedAt          *time.Time             `json:"startedAt,omitempty"`
-	FinishedAt         *time.Time             `json:"finishedAt,omitempty"`
-	RequestDelay       string                 `json:"requestDelay"`
-	RequestsPerSecond  float64                `json:"requestsPerSecond"`
-	LFXTimeout         string                 `json:"lfxTimeout,omitempty"`
-	SyncTimeout        string                 `json:"syncTimeout,omitempty"`
-	MaxLookups         int                    `json:"maxLookups"`
-	EnrichAll          bool                   `json:"enrichAll"`
-	CheckFoundationCSV bool                   `json:"checkFoundationCsv"`
-	AutoAddMaintainers bool                   `json:"autoAddMaintainers"`
-	FoundationOwner    string                 `json:"foundationOwner,omitempty"`
-	FoundationRepo     string                 `json:"foundationRepo,omitempty"`
-	FoundationRef      string                 `json:"foundationRef,omitempty"`
-	FoundationPath     string                 `json:"foundationPath,omitempty"`
-	Total              int                    `json:"total"`
-	Processed          int                    `json:"processed"`
-	Current            string                 `json:"current,omitempty"`
-	TotalProjects      int                    `json:"totalProjects"`
-	ProjectsProcessed  int                    `json:"projectsProcessed"`
-	CurrentProject     string                 `json:"currentProject,omitempty"`
-	StoppedEarly       bool                   `json:"stoppedEarly,omitempty"`
-	RemainingProjects  int                    `json:"remainingProjects,omitempty"`
-	Attempted          int                    `json:"attempted"`
-	Matched            int                    `json:"matched"`
-	Ambiguous          int                    `json:"ambiguous"`
-	Unmatched          int                    `json:"unmatched"`
-	Errored            int                    `json:"errored"`
-	SkippedRecent      int                    `json:"skippedRecent"`
-	SkippedLimit       int                    `json:"skippedLimit"`
-	WriteGist          bool                   `json:"writeGist"`
-	GistID             string                 `json:"gistId,omitempty"`
-	GistURL            string                 `json:"gistUrl,omitempty"`
-	GistFilename       string                 `json:"gistFilename,omitempty"`
-	GistRows           int                    `json:"gistRows,omitempty"`
-	Error              string                 `json:"error,omitempty"`
+	ID                   string                 `json:"id"`
+	Status               lfxEnrichmentRunStatus `json:"status"`
+	RequestedBy          string                 `json:"requestedBy"`
+	CreatedAt            time.Time              `json:"createdAt"`
+	StartedAt            *time.Time             `json:"startedAt,omitempty"`
+	FinishedAt           *time.Time             `json:"finishedAt,omitempty"`
+	RequestDelay         string                 `json:"requestDelay"`
+	RequestsPerSecond    float64                `json:"requestsPerSecond"`
+	LFXTimeout           string                 `json:"lfxTimeout,omitempty"`
+	SyncTimeout          string                 `json:"syncTimeout,omitempty"`
+	MaxLookups           int                    `json:"maxLookups"`
+	EnrichAll            bool                   `json:"enrichAll"`
+	CheckFoundationCSV   bool                   `json:"checkFoundationCsv"`
+	AutoAddMaintainers   bool                   `json:"autoAddMaintainers"`
+	FoundationOwner      string                 `json:"foundationOwner,omitempty"`
+	FoundationRepo       string                 `json:"foundationRepo,omitempty"`
+	FoundationRef        string                 `json:"foundationRef,omitempty"`
+	FoundationPath       string                 `json:"foundationPath,omitempty"`
+	Total                int                    `json:"total"`
+	Processed            int                    `json:"processed"`
+	Current              string                 `json:"current,omitempty"`
+	TotalProjects        int                    `json:"totalProjects"`
+	ProjectsProcessed    int                    `json:"projectsProcessed"`
+	CurrentProject       string                 `json:"currentProject,omitempty"`
+	StoppedEarly         bool                   `json:"stoppedEarly,omitempty"`
+	RemainingProjects    int                    `json:"remainingProjects,omitempty"`
+	Attempted            int                    `json:"attempted"`
+	Matched              int                    `json:"matched"`
+	Ambiguous            int                    `json:"ambiguous"`
+	Unmatched            int                    `json:"unmatched"`
+	Errored              int                    `json:"errored"`
+	SkippedRecent        int                    `json:"skippedRecent"`
+	SkippedLimit         int                    `json:"skippedLimit"`
+	AutoAddAuditFailures int                    `json:"autoAddAuditFailures,omitempty"`
+	WriteGist            bool                   `json:"writeGist"`
+	GistID               string                 `json:"gistId,omitempty"`
+	GistURL              string                 `json:"gistUrl,omitempty"`
+	GistFilename         string                 `json:"gistFilename,omitempty"`
+	GistRows             int                    `json:"gistRows,omitempty"`
+	Error                string                 `json:"error,omitempty"`
 }
 
 type lfxEnrichmentRunStore struct {
@@ -5260,14 +5262,18 @@ func (s *server) runLFXEnrichment(runID string, options lfxEnrichmentRunOptions,
 		run.GistRows = gistRows
 		run.StoppedEarly = summary.StoppedEarly
 		run.RemainingProjects = summary.RemainingProjects
-		if err != nil {
+		run.AutoAddAuditFailures = summary.AutoAdd.AuditFailures
+		switch {
+		case err != nil:
 			run.Status = lfxRunFailed
 			run.Error = err.Error()
-		} else {
+		case summary.AutoAdd.AuditFailures > 0:
+			run.Status = lfxRunDegraded
+		default:
 			run.Status = lfxRunSucceeded
 		}
 	})
-	s.logLFXEnrichmentRun(runID, requestedBy, staffID, summary.Enrichment, options, gistOptions, gistID, gistURL, gistRows, err)
+	s.logLFXEnrichmentRun(runID, requestedBy, staffID, summary, options, gistOptions, gistID, gistURL, gistRows, err)
 }
 
 func (s *server) lfxProgressUpdater(runID string) func(lfx.EnrichmentProgress) {
@@ -5594,33 +5600,34 @@ func lfxGistFilename(value string) string {
 	return value
 }
 
-func (s *server) logLFXEnrichmentRun(runID, requestedBy string, staffID *uint, summary dotproject.EnrichmentSummary, options lfxEnrichmentRunOptions, gistOptions lfxEnrichmentGistOptions, gistID, gistURL string, gistRows int, runErr error) {
+func (s *server) logLFXEnrichmentRun(runID, requestedBy string, staffID *uint, summary dotproject.SyncSummary, options lfxEnrichmentRunOptions, gistOptions lfxEnrichmentGistOptions, gistID, gistURL string, gistRows int, runErr error) {
 	if s == nil || s.store == nil || s.store.DB() == nil {
 		return
 	}
 	metadata := map[string]any{
-		"run_id":               runID,
-		"requested_by":         requestedBy,
-		"request_delay":        options.RequestDelay.String(),
-		"requests_per_second":  options.RequestsPerSecond,
-		"lfx_timeout":          options.LFXTimeout.String(),
-		"sync_timeout":         options.SyncTimeout.String(),
-		"max_lookups":          options.MaxLookups,
-		"enrich_all":           options.EnrichAll,
-		"check_foundation_csv": options.CheckFoundationCSV,
-		"auto_add_maintainers": options.AutoAddMaintainers,
-		"foundation_owner":     options.FoundationOwner,
-		"foundation_repo":      options.FoundationRepo,
-		"foundation_ref":       options.FoundationRef,
-		"foundation_path":      options.FoundationPath,
-		"attempted":            summary.Attempted,
-		"matched":              summary.Matched,
-		"ambiguous":            summary.Ambiguous,
-		"unmatched":            summary.Unmatched,
-		"errored":              summary.Errored,
-		"skipped_recent":       summary.SkippedRecent,
-		"skipped_limit":        summary.SkippedLimit,
-		"write_gist":           gistOptions.Write,
+		"run_id":                  runID,
+		"requested_by":            requestedBy,
+		"request_delay":           options.RequestDelay.String(),
+		"requests_per_second":     options.RequestsPerSecond,
+		"lfx_timeout":             options.LFXTimeout.String(),
+		"sync_timeout":            options.SyncTimeout.String(),
+		"max_lookups":             options.MaxLookups,
+		"enrich_all":              options.EnrichAll,
+		"check_foundation_csv":    options.CheckFoundationCSV,
+		"auto_add_maintainers":    options.AutoAddMaintainers,
+		"foundation_owner":        options.FoundationOwner,
+		"foundation_repo":         options.FoundationRepo,
+		"foundation_ref":          options.FoundationRef,
+		"foundation_path":         options.FoundationPath,
+		"attempted":               summary.Enrichment.Attempted,
+		"matched":                 summary.Enrichment.Matched,
+		"ambiguous":               summary.Enrichment.Ambiguous,
+		"unmatched":               summary.Enrichment.Unmatched,
+		"errored":                 summary.Enrichment.Errored,
+		"skipped_recent":          summary.Enrichment.SkippedRecent,
+		"skipped_limit":           summary.Enrichment.SkippedLimit,
+		"auto_add_audit_failures": summary.AutoAdd.AuditFailures,
+		"write_gist":              gistOptions.Write,
 	}
 	if gistOptions.Write {
 		metadata["gist_id"] = strings.TrimSpace(gistID)
@@ -5630,10 +5637,14 @@ func (s *server) logLFXEnrichmentRun(runID, requestedBy string, staffID *uint, s
 	}
 	action := "LFX_ENRICHMENT_RUN_SUCCEEDED"
 	message := fmt.Sprintf("LFX enrichment run %s completed by %s", runID, requestedBy)
-	if runErr != nil {
+	switch {
+	case runErr != nil:
 		action = "LFX_ENRICHMENT_RUN_FAILED"
 		message = fmt.Sprintf("LFX enrichment run %s failed for %s", runID, requestedBy)
 		metadata["error"] = runErr.Error()
+	case summary.AutoAdd.AuditFailures > 0:
+		action = "LFX_ENRICHMENT_RUN_DEGRADED"
+		message = fmt.Sprintf("LFX enrichment run %s completed for %s with %d auto-add audit failure(s)", runID, requestedBy, summary.AutoAdd.AuditFailures)
 	}
 	body, err := json.Marshal(metadata)
 	if err != nil {
