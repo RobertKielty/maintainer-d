@@ -87,6 +87,7 @@ type fakeGitHubServer struct {
 	reviewsStatus int    // non-zero: fail the PR review listing with this HTTP status
 	compareStatus int    // non-zero: fail the compare endpoint with this HTTP status
 	prHeadSHA     string // non-empty: the merged PR's final head SHA
+	prsJSON       string // non-empty: overrides the commit->PR listing body
 
 	// compareStatusByHead maps a review head SHA to the status the compare
 	// endpoint reports for base deadbeef...head (default "identical").
@@ -129,6 +130,10 @@ func (f *fakeGitHubServer) handler() http.HandlerFunc {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			if f.prsJSON != "" {
+				_, _ = w.Write([]byte(f.prsJSON))
+				return
+			}
 			head := ""
 			if f.prHeadSHA != "" {
 				head = `,"head":{"sha":"` + f.prHeadSHA + `"}`
@@ -417,6 +422,57 @@ func TestResolveCachesFailedPRLookups(t *testing.T) {
 	}
 	if fake.prCalls != 1 {
 		t.Errorf("prCalls = %d, want 1 (a failed PR lookup must be cached like a successful one)", fake.prCalls)
+	}
+}
+
+func TestResolveDisambiguatesMultipleMergedPRsByBaseRef(t *testing.T) {
+	// The blamed commit is associated with two merged PRs: a release-branch
+	// PR that reused it, and #42 merged into the blamed ref. Only #42's
+	// approval can vouch for the line.
+	fake := &fakeGitHubServer{
+		prsJSON: `[
+			{"number":77,"html_url":"https://github.com/example-org/example-repo/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"release-1.0"}},
+			{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}}
+		]`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42 (the PR merged into the blamed ref)", prov.PRNumber)
+	}
+	if prov.ReviewState != ReviewStateApproved {
+		t.Errorf("ReviewState = %q, want %q", prov.ReviewState, ReviewStateApproved)
+	}
+}
+
+func TestResolveReportsUnknownWhenMergedPRsAreAmbiguous(t *testing.T) {
+	// Two merged PRs into the same base can't be told apart, so no approval
+	// may be borrowed from either - the association must report unknown.
+	fake := &fakeGitHubServer{
+		prsJSON: `[
+			{"number":77,"html_url":"https://github.com/example-org/example-repo/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"main"}},
+			{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}}
+		]`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.ReviewState != ReviewStateUnknown {
+		t.Errorf("ReviewState = %q, want %q", prov.ReviewState, ReviewStateUnknown)
+	}
+	if prov.PRNumber != 0 {
+		t.Errorf("PRNumber = %d, want 0 (no PR may be claimed for an ambiguous association)", prov.PRNumber)
 	}
 }
 

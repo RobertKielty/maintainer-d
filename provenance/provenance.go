@@ -61,10 +61,12 @@ type fileKey struct {
 	owner, repo, ref, path string
 }
 
-// commitKey scopes the PR cache to a repository: the same commit SHA exists
-// in an upstream repo and its forks, but the associated PRs differ.
+// commitKey scopes the PR cache to a repository and the blamed ref: the same
+// commit SHA exists in an upstream repo and its forks (different PRs), and
+// when several merged PRs share the commit, which one vouches for the line
+// depends on which ref was blamed.
 type commitKey struct {
-	owner, repo, sha string
+	owner, repo, ref, sha string
 }
 
 type blameRange struct {
@@ -118,7 +120,7 @@ func (r *Resolver) Resolve(ctx context.Context, owner, repo, ref, path string, l
 		return LineProvenance{ReviewState: ReviewStateUnknown}, nil
 	}
 
-	info, err := r.prForCommit(ctx, owner, repo, sha)
+	info, err := r.prForCommit(ctx, owner, repo, ref, sha)
 	if err != nil {
 		return LineProvenance{}, err
 	}
@@ -157,8 +159,8 @@ func (r *Resolver) blame(ctx context.Context, owner, repo, ref, path string) ([]
 	return ranges, err
 }
 
-func (r *Resolver) prForCommit(ctx context.Context, owner, repo, sha string) (prInfo, error) {
-	key := commitKey{owner: owner, repo: repo, sha: sha}
+func (r *Resolver) prForCommit(ctx context.Context, owner, repo, ref, sha string) (prInfo, error) {
+	key := commitKey{owner: owner, repo: repo, ref: ref, sha: sha}
 
 	r.mu.Lock()
 	if cached, ok := r.prByCK[key]; ok {
@@ -167,7 +169,7 @@ func (r *Resolver) prForCommit(ctx context.Context, owner, repo, sha string) (pr
 	}
 	r.mu.Unlock()
 
-	info, err := r.fetchPRForCommit(ctx, owner, repo, sha)
+	info, err := r.fetchPRForCommit(ctx, owner, repo, ref, sha)
 
 	r.mu.Lock()
 	r.prByCK[key] = prResult{info: info, err: err}
@@ -175,7 +177,7 @@ func (r *Resolver) prForCommit(ctx context.Context, owner, repo, sha string) (pr
 	return info, err
 }
 
-func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, sha string) (prInfo, error) {
+func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, ref, sha string) (prInfo, error) {
 	prs, _, err := r.Client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, nil)
 	if err != nil {
 		return prInfo{}, fmt.Errorf("list pull requests for commit: %w", err)
@@ -183,15 +185,35 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, sha string
 	// Only a merged PR can have introduced the commit to the blamed branch;
 	// a commit pushed directly can still be *associated* with an open or
 	// closed-unmerged PR, whose review state must not be inherited.
-	var pr *github.PullRequest
+	var merged []*github.PullRequest
 	for _, candidate := range prs {
 		if candidate.MergedAt != nil {
-			pr = candidate
-			break
+			merged = append(merged, candidate)
 		}
 	}
-	if pr == nil {
+	if len(merged) == 0 {
 		return prInfo{reviewState: ReviewStateDirectPush}, nil
+	}
+	pr := merged[0]
+	if len(merged) > 1 {
+		// GitHub associates the same commit with every merged PR that
+		// contains it - a release-branch PR reusing a commit from the
+		// default branch, for example. Borrowing an approval from a PR
+		// merged into a different branch would inflate the line's evidence,
+		// so only a PR whose base is the blamed ref can vouch for it. When
+		// the base can't single one out (the ref is a bare SHA, or several
+		// PRs merged into it), the association is ambiguous and must be
+		// reported as unknown rather than guessed.
+		var matching []*github.PullRequest
+		for _, candidate := range merged {
+			if strings.EqualFold(strings.TrimSpace(candidate.GetBase().GetRef()), strings.TrimSpace(ref)) {
+				matching = append(matching, candidate)
+			}
+		}
+		if len(matching) != 1 {
+			return prInfo{reviewState: ReviewStateUnknown}, nil
+		}
+		pr = matching[0]
 	}
 	info := prInfo{
 		number: pr.GetNumber(),
