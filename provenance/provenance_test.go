@@ -139,10 +139,13 @@ func (f *fakeGitHubServer) handler() http.HandlerFunc {
 				head = `,"head":{"sha":"` + f.prHeadSHA + `"}`
 			}
 			// An unmerged PR listed first must be skipped: only a merged PR can
-			// have introduced the commit to the blamed branch.
+			// have introduced the commit to the blamed branch. base.ref matches
+			// the "main" branch every default-fixture test passes to Resolve,
+			// since a real merged PR always carries a base and branch
+			// validation now applies even when only one merged PR comes back.
 			_, _ = w.Write([]byte(`[
 				{"number":41,"html_url":"https://github.com/example-org/example-repo/pull/41"},
-				{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z"` + head + `}
+				{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}` + head + `}
 			]`))
 		case "/repos/example-org/example-repo/pulls/42/reviews":
 			f.reviewCalls++
@@ -526,6 +529,32 @@ func TestResolveReportsUnknownWhenMergedPRsAreAmbiguous(t *testing.T) {
 	}
 	if prov.PRNumber != 0 {
 		t.Errorf("PRNumber = %d, want 0 (no PR may be claimed for an ambiguous association)", prov.PRNumber)
+	}
+}
+
+func TestResolveReportsUnknownWhenSingleMergedPRBaseMismatchesBranch(t *testing.T) {
+	// The commit reached the blamed branch independently of the one merged
+	// PR GitHub returns (e.g. merged into "develop" and later cherry-picked
+	// or fast-forwarded onto "main") - that PR's approval must not be
+	// credited to a line blamed on "main" just because it's the only result.
+	fake := &fakeGitHubServer{
+		prsJSON: `[
+			{"number":77,"html_url":"https://github.com/example-org/example-repo/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"develop"}}
+		]`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "deadbeef", "main", "MAINTAINERS.md", 2)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.ReviewState != ReviewStateUnknown {
+		t.Errorf("ReviewState = %q, want %q", prov.ReviewState, ReviewStateUnknown)
+	}
+	if prov.PRNumber != 0 {
+		t.Errorf("PRNumber = %d, want 0 (the only merged PR's base doesn't match the blamed branch)", prov.PRNumber)
 	}
 }
 

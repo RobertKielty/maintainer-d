@@ -199,21 +199,25 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, branch, sh
 		return prInfo{reviewState: ReviewStateDirectPush}, nil
 	}
 	pr := merged[0]
-	if len(merged) > 1 {
-		// GitHub associates the same commit with every merged PR that
-		// contains it - a release-branch PR reusing a commit from the
-		// default branch, for example. Borrowing an approval from a PR
-		// merged into a different branch would inflate the line's evidence,
-		// so only a PR whose base is the blamed file's branch can vouch for
-		// it. The branch travels separately from the blame ref because blame
-		// runs against a pinned snapshot SHA, which never equals a base
-		// branch name. When the base can't single one out (no branch known,
-		// or several PRs merged into it), the association is ambiguous and
-		// must be reported as unknown rather than guessed.
-		branch = strings.TrimSpace(branch)
+	// GitHub associates the same commit with every merged PR that contains
+	// it - a release-branch PR reusing a commit from the default branch, for
+	// example, or the same commit independently reaching both branches.
+	// Borrowing an approval from a PR merged into a different branch would
+	// inflate the line's evidence, so whenever the blamed branch is known,
+	// only a PR whose base matches it can vouch for the line - even when
+	// exactly one merged PR came back, since that one PR can still be the
+	// wrong one. The branch travels separately from the blame ref because
+	// blame runs against a pinned snapshot SHA, which never equals a base
+	// branch name. When the base can't single one out (no branch known and
+	// several PRs merged, or a known branch matching none/more than one),
+	// the association is ambiguous and must be reported as unknown rather
+	// than guessed.
+	branch = strings.TrimSpace(branch)
+	switch {
+	case branch != "":
 		var matching []*github.PullRequest
 		for _, candidate := range merged {
-			if branch != "" && strings.EqualFold(strings.TrimSpace(candidate.GetBase().GetRef()), branch) {
+			if strings.EqualFold(strings.TrimSpace(candidate.GetBase().GetRef()), branch) {
 				matching = append(matching, candidate)
 			}
 		}
@@ -221,6 +225,8 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, branch, sh
 			return prInfo{reviewState: ReviewStateUnknown}, nil
 		}
 		pr = matching[0]
+	case len(merged) > 1:
+		return prInfo{reviewState: ReviewStateUnknown}, nil
 	}
 	info := prInfo{
 		number: pr.GetNumber(),
