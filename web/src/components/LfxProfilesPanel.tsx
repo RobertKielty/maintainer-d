@@ -83,6 +83,10 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
   if (profiles.length === 0) {
     return null;
   }
+  // The multi-profile path can persist only "error" rows when every identity
+  // lookup fails nonfatally, so the duplicate-profile notice must not promise
+  // a "Chosen" row that does not exist.
+  const hasChosen = profiles.some((profile) => profile.matchStatus === "chosen");
 
   return (
     <section className={styles.panel}>
@@ -103,9 +107,10 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
             <p className={styles.notice}>
               This maintainer has more than one LFX profile bound to the same GitHub account.
               This is a known upstream LFX data-quality issue, not a maintainer-d bug — LFX has
-              no 1:1 mapping between profile IDs and GitHub identities. The row marked
-              &quot;Chosen&quot; is the one maintainer-d treats as canonical; the rest are shown
-              here to help troubleshoot which profile is authoritative.
+              no 1:1 mapping between profile IDs and GitHub identities.{" "}
+              {hasChosen
+                ? "The row marked “Chosen” is the one maintainer-d treats as canonical; the rest are shown here to help troubleshoot which profile is authoritative."
+                : "No row is currently marked “Chosen”: the last enrichment run could not fetch identities for any of these profiles, so none has been selected as canonical yet."}
             </p>
           )}
 
