@@ -472,3 +472,45 @@ Graduated,Kubernetes,Alice Example,Acme,AliceExample
 	assert.Equal(t, "unmatched", store.observed[0].MatchStatus)
 	assert.Equal(t, "github:missing-handle", store.observed[0].SourceRef)
 }
+
+func TestAutoMaintainerAdderPropagatesExpiredRunContext(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"boom"}`, http.StatusBadGateway)
+	}))
+	defer server.Close()
+	client := github.NewClient(nil)
+	baseURL, err := url.Parse(server.URL + "/")
+	require.NoError(t, err)
+	client.BaseURL = baseURL
+
+	adder := &AutoMaintainerAdder{
+		Store:              newFakeAutoAddStore(),
+		AutoAddMaintainers: false,
+		Provenance:         provenance.NewResolver(client),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A provenance failure caused by the run context expiring is the run's
+	// failure, not a per-row audit failure: swallowing it would let a
+	// timed-out run report a full success with stopped_early=false.
+	summary, err := adder.ProcessProject(ctx, model.Project{Model: gorm.Model{ID: 1}, Name: "Kubernetes"}, &DiscoveryResult{
+		MaintainersFile: FileDiscovery{
+			Exists:    true,
+			Path:      ".project/maintainers.yaml",
+			BlobURL:   "https://github.com/example-org/kubernetes/blob/main/.project/maintainers.yaml",
+			CommitSHA: "def456",
+			Body: `maintainers:
+  - teams:
+      - name: project-maintainers
+        members:
+          - AliceExample
+`,
+		},
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, summary.AuditFailures, "an expired run context must not be recorded as per-row audit failures")
+}

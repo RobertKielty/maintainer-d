@@ -179,6 +179,13 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 		}
 
 		if err := a.writeDotProjectObservation(ctx, project, maintainerID, normalized, result.MaintainersFile, lineByHandle[normalized], now); err != nil {
+			// An expired run context is the run's failure, not this row's:
+			// counting it as an audit failure and continuing would let a
+			// timed-out run finish as a non-partial success. Ordinary
+			// provenance failures stay tolerated per-row.
+			if ctx.Err() != nil {
+				return summary, ctx.Err()
+			}
 			summary.AuditFailures++
 		}
 
@@ -202,6 +209,9 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 					summary.SkippedFoundationMissing++
 				}
 				if err := a.writeFoundationObservation(ctx, project.ID, maintainerID, normalized, record, now, "unmatched", reason, false, nil); err != nil {
+					if ctx.Err() != nil {
+						return summary, ctx.Err()
+					}
 					summary.AuditFailures++
 				}
 				continue
@@ -213,6 +223,9 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 		// handle and a "matched" row would assert evidence never queried.
 		if a.CheckFoundationCSV {
 			if err := a.writeFoundationObservation(ctx, project.ID, maintainerID, normalized, record, now, "matched", "present in cncf/foundation project-maintainers.csv", true, nil); err != nil {
+				if ctx.Err() != nil {
+					return summary, ctx.Err()
+				}
 				summary.AuditFailures++
 			}
 		}
