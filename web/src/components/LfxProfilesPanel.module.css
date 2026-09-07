@@ -134,38 +134,38 @@
 }
 
 .badge_default {
-  background: rgba(15, 23, 42, 0.12);
-  color: #0b1220;
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
 }
 
 .badge_chosen {
-  background: rgba(16, 185, 129, 0.18);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_duplicate {
-  background: rgba(245, 158, 11, 0.18);
-  color: #8a4b00;
+  background: var(--md-status-warning-bg);
+  color: var(--md-status-warning-text);
 }
 
 .badge_matched {
-  background: rgba(16, 185, 129, 0.18);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_error {
-  background: rgba(239, 68, 68, 0.14);
-  color: #991b1b;
+  background: var(--md-status-danger-bg);
+  color: var(--md-status-danger-text);
 }
 
 .badge_type_contact {
-  background: rgba(16, 185, 129, 0.14);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_type_lead {
-  background: rgba(148, 163, 184, 0.22);
-  color: #334155;
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
 }
 
 @media (max-width: 720px) {

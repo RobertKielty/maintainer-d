@@ -136,23 +136,23 @@
 }
 
 .badge_review_approved {
-  background: rgba(16, 185, 129, 0.18);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_review_unreviewed {
-  background: rgba(245, 158, 11, 0.18);
-  color: #8a4b00;
+  background: var(--md-status-warning-bg);
+  color: var(--md-status-warning-text);
 }
 
 .badge_review_direct-push {
-  background: rgba(239, 68, 68, 0.14);
-  color: #991b1b;
+  background: var(--md-status-danger-bg);
+  color: var(--md-status-danger-text);
 }
 
 .badge_review_unknown {
-  background: rgba(15, 23, 42, 0.08);
-  color: #334155;
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
 }
 
 .matchCell {
@@ -184,23 +184,23 @@
 }
 
 .badge_default {
-  background: rgba(15, 23, 42, 0.12);
-  color: #0b1220;
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
 }
 
 .badge_matched {
-  background: rgba(16, 185, 129, 0.18);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_unmatched {
-  background: rgba(239, 68, 68, 0.14);
-  color: #991b1b;
+  background: var(--md-status-danger-bg);
+  color: var(--md-status-danger-text);
 }
 
 .badge_candidate {
-  background: rgba(245, 158, 11, 0.18);
-  color: #8a4b00;
+  background: var(--md-status-warning-bg);
+  color: var(--md-status-warning-text);
 }
 
 .badge_conflict {
@@ -210,23 +210,23 @@
 }
 
 .badge_chosen {
-  background: rgba(16, 185, 129, 0.18);
-  color: #0f5132;
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
 }
 
 .badge_duplicate {
-  background: rgba(245, 158, 11, 0.18);
-  color: #8a4b00;
+  background: var(--md-status-warning-bg);
+  color: var(--md-status-warning-text);
 }
 
 .badge_error {
-  background: rgba(239, 68, 68, 0.14);
-  color: #991b1b;
+  background: var(--md-status-danger-bg);
+  color: var(--md-status-danger-text);
 }
 
 .badge_confidence {
-  background: rgba(15, 23, 42, 0.08);
-  color: #334155;
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
 }
 
 @media (max-width: 720px) {
