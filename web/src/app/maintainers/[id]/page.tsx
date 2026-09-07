@@ -397,7 +397,10 @@ export default function MaintainerPage() {
     }
     // The chosen row wins even without an LFID: falling back to any row
     // that happens to carry one would let a duplicate profile drive the
-    // summary card's OpenProfile link.
+    // summary card's OpenProfile link. Enrichment retires profile rows the
+    // latest lookup no longer returns (lfx/enricher.go retireStaleProfiles),
+    // so "chosen" here is never a stale leftover from a prior, more
+    // ambiguous lookup.
     const best =
       lfxObservations.find((observation) => observation.matchStatus === "chosen") ||
       lfxObservations.find((observation) => observation.matchStatus === "matched") ||

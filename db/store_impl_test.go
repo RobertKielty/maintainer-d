@@ -725,3 +725,72 @@ func TestAdoptMaintainerIdentityObservations(t *testing.T) {
 	require.NoError(t, db.Model(&model.MaintainerIdentityObservation{}).Where("maintainer_id IS NULL").Count(&remaining).Error)
 	assert.Equal(t, int64(1), remaining, "the unrelated handle's row must stay unadopted")
 }
+
+func TestRetireStaleMaintainerIdentityObservationsDeletesProfilesAbsentFromLatestLookup(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(7)
+	older := time.Now().UTC().Add(-time.Hour)
+	for _, userID := range []string{"sfid-a", "sfid-b"} {
+		_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+			ProjectID:    &projectID,
+			Source:       "lfx",
+			SourceRef:    "github:example-handle",
+			SourceUserID: userID,
+			MatchStatus:  "duplicate",
+			ObservedAt:   older,
+		})
+		require.NoError(t, err)
+	}
+	// An unmatched row (no SourceUserID) for the same candidate must never be
+	// touched by retirement - it isn't part of the profile set.
+	_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:   &projectID,
+		Source:      "lfx",
+		SourceRef:   "github:example-handle",
+		MatchStatus: "unmatched",
+		ObservedAt:  older,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	deleted, err := store.RetireStaleMaintainerIdentityObservations("lfx", &projectID, "github:example-handle", []string{"sfid-a"}, now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted, "only the profile absent from the keep list must be retired")
+
+	var remaining []model.MaintainerIdentityObservation
+	require.NoError(t, db.Where("source = ? AND source_ref = ?", "lfx", "github:example-handle").Find(&remaining).Error)
+	require.Len(t, remaining, 2, "the kept profile and the unmatched row must survive")
+	var sourceUserIDs []string
+	for _, obs := range remaining {
+		sourceUserIDs = append(sourceUserIDs, obs.SourceUserID)
+	}
+	assert.Contains(t, sourceUserIDs, "sfid-a")
+	assert.Contains(t, sourceUserIDs, "")
+	assert.NotContains(t, sourceUserIDs, "sfid-b")
+}
+
+func TestRetireStaleMaintainerIdentityObservationsWithEmptyKeepListRetiresEverything(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(9)
+	older := time.Now().UTC().Add(-time.Hour)
+	for _, userID := range []string{"sfid-a", "sfid-b"} {
+		_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+			ProjectID:    &projectID,
+			Source:       "lfx",
+			SourceRef:    "github:example-handle",
+			SourceUserID: userID,
+			MatchStatus:  "duplicate",
+			ObservedAt:   older,
+		})
+		require.NoError(t, err)
+	}
+
+	now := time.Now().UTC()
+	deleted, err := store.RetireStaleMaintainerIdentityObservations("lfx", &projectID, "github:example-handle", nil, now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), deleted, "an empty keep list (the lookup found no profiles) must retire every prior profile row")
+}

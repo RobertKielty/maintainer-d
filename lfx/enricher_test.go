@@ -48,6 +48,10 @@ func (f fakeObservationStore) UpsertMaintainerIdentityObservation(observation *m
 	return observation, nil
 }
 
+func (f fakeObservationStore) RetireStaleMaintainerIdentityObservations(string, *uint, string, []string, time.Time) (int64, error) {
+	return 0, nil
+}
+
 type fakeUserSearcher struct {
 	calls int
 }
@@ -324,9 +328,15 @@ func TestEnricherSkipsInvalidProjectMaintainersFile(t *testing.T) {
 // capturingObservationStore appends every upserted observation, unlike
 // fakeObservationStore which only keeps the last one - needed to assert on
 // the full set of rows a multi-profile match writes.
+type retireCall struct {
+	sourceRef string
+	keep      []string
+}
+
 type capturingObservationStore struct {
 	maintainers map[string]model.Maintainer
 	observed    *[]model.MaintainerIdentityObservation
+	retired     *[]retireCall
 }
 
 func (f capturingObservationStore) GetMaintainerMapByGitHubAccount() (map[string]model.Maintainer, error) {
@@ -344,6 +354,13 @@ func (f capturingObservationStore) ListMaintainersActiveOnAnyProject(maintainerI
 func (f capturingObservationStore) UpsertMaintainerIdentityObservation(observation *model.MaintainerIdentityObservation) (*model.MaintainerIdentityObservation, error) {
 	*f.observed = append(*f.observed, *observation)
 	return observation, nil
+}
+
+func (f capturingObservationStore) RetireStaleMaintainerIdentityObservations(_ string, _ *uint, sourceRef string, keep []string, _ time.Time) (int64, error) {
+	if f.retired != nil {
+		*f.retired = append(*f.retired, retireCall{sourceRef: sourceRef, keep: keep})
+	}
+	return 0, nil
 }
 
 // fakeMultiUserSearcher returns a fixed set of LFX profiles for any
@@ -411,6 +428,58 @@ func TestEnrichCandidateWritesOneRowPerDuplicateLFXProfile(t *testing.T) {
 	assert.Equal(t, "exact", bySourceUserID["sfid-b"].Confidence)
 	assert.Equal(t, "duplicate", bySourceUserID["sfid-a"].MatchStatus)
 	assert.Equal(t, "duplicate", bySourceUserID["sfid-c"].MatchStatus)
+}
+
+func TestEnrichCandidateRetiresProfilesAbsentFromMultiMatchLookup(t *testing.T) {
+	t.Parallel()
+
+	users := []User{
+		{ID: "sfid-a", Type: "lead", LastModifiedDate: "2026-01-01T00:00:00Z"},
+		{ID: "sfid-b", Type: "contact", LastModifiedDate: "2026-01-02T00:00:00Z"},
+	}
+	var observed []model.MaintainerIdentityObservation
+	var retired []retireCall
+	enricher := &Enricher{
+		Store: capturingObservationStore{maintainers: map[string]model.Maintainer{}, observed: &observed, retired: &retired},
+		Client: &fakeMultiUserSearcher{
+			users: users,
+		},
+	}
+
+	var summary dotproject.EnrichmentSummary
+	err := enricher.enrichCandidate(context.Background(), nil, candidate{
+		GitHubUser: "test-fixture-handle",
+		SourceRef:  "github:test-fixture-handle",
+	}, time.Now().UTC(), &summary)
+	require.NoError(t, err)
+
+	require.Len(t, retired, 1, "a multi-profile lookup must retire rows absent from its own result set")
+	assert.Equal(t, "github:test-fixture-handle", retired[0].sourceRef)
+	assert.ElementsMatch(t, []string{"sfid-a", "sfid-b"}, retired[0].keep,
+		"every profile this lookup returned must be kept, not retired")
+}
+
+func TestEnrichCandidateRetiresProfilesAbsentFromSingleMatchLookup(t *testing.T) {
+	t.Parallel()
+
+	var observed []model.MaintainerIdentityObservation
+	var retired []retireCall
+	enricher := &Enricher{
+		Store: capturingObservationStore{maintainers: map[string]model.Maintainer{}, observed: &observed, retired: &retired},
+		Client: &fakeSingleUserSearcher{
+			user: User{ID: "sfid-only", Type: "contact"},
+		},
+	}
+
+	var summary dotproject.EnrichmentSummary
+	err := enricher.enrichCandidate(context.Background(), nil, candidate{
+		GitHubUser: "test-fixture-handle",
+		SourceRef:  "github:test-fixture-handle",
+	}, time.Now().UTC(), &summary)
+	require.NoError(t, err)
+
+	require.Len(t, retired, 1, "resolving down to a single profile must retire any other profile a previous ambiguous lookup left behind")
+	assert.Equal(t, []string{"sfid-only"}, retired[0].keep)
 }
 
 func TestEnrichCandidateToleratesPartialIdentityFetchFailure(t *testing.T) {

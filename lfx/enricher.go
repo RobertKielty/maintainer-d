@@ -18,6 +18,7 @@ type ObservationStore interface {
 	ListMaintainersWithoutIdentityObservation(source string) ([]model.Maintainer, error)
 	ListMaintainersActiveOnAnyProject(maintainerIDs []uint) (map[uint]bool, error)
 	UpsertMaintainerIdentityObservation(observation *model.MaintainerIdentityObservation) (*model.MaintainerIdentityObservation, error)
+	RetireStaleMaintainerIdentityObservations(source string, projectID *uint, sourceRef string, keepSourceUserIDs []string, observedBefore time.Time) (int64, error)
 }
 
 type UserSearcher interface {
@@ -239,7 +240,14 @@ func (e *Enricher) enrichCandidate(ctx context.Context, projectID *uint, candida
 	switch len(users) {
 	case 0:
 		summary.Unmatched++
-		return e.writeObservation(projectID, candidate, nil, nil, now, "unmatched", "no LFX user matched github handle, email, or username", "")
+		if err := e.writeObservation(projectID, candidate, nil, nil, now, "unmatched", "no LFX user matched github handle, email, or username", ""); err != nil {
+			return err
+		}
+		// The search genuinely ran and found nothing this time, so every
+		// profile previously recorded for this candidate is stale (LFX
+		// resolved a duplicate, or the identity backing it changed).
+		e.retireStaleProfiles(projectID, candidate, nil, now)
+		return nil
 	case 1:
 		summary.Matched++
 		user := users[0]
@@ -260,11 +268,30 @@ func (e *Enricher) enrichCandidate(ctx context.Context, projectID *uint, candida
 			return PlatformAccessError(err)
 		}
 		confidence := confidenceFor(user, identities, githubUser, email, matched)
-		return e.writeObservation(projectID, candidate, &user, identities, now, "matched", "single LFX user match", confidence)
+		if err := e.writeObservation(projectID, candidate, &user, identities, now, "matched", "single LFX user match", confidence); err != nil {
+			return err
+		}
+		// Only one profile matches now; retire any other profile rows a
+		// previous, more ambiguous lookup left behind.
+		e.retireStaleProfiles(projectID, candidate, []string{strings.TrimSpace(user.ID)}, now)
+		return nil
 	default:
 		summary.Ambiguous++
 		return e.enrichMultipleMatches(ctx, projectID, candidate, users, githubUser, email, matched, now, summary)
 	}
+}
+
+// retireStaleProfiles deletes previously recorded LFX profile rows for this
+// candidate that the current lookup did not return. It never aborts
+// enrichment: a retirement failure is logged-equivalent (returned error is
+// deliberately dropped) since the stale row is a display nuisance, not data
+// loss, and must not turn a successful lookup into a failed one.
+func (e *Enricher) retireStaleProfiles(projectID *uint, candidate candidate, keepSourceUserIDs []string, now time.Time) {
+	sourceRef := strings.TrimSpace(candidate.SourceRef)
+	if sourceRef == "" {
+		return
+	}
+	_, _ = e.Store.RetireStaleMaintainerIdentityObservations("lfx", projectID, sourceRef, keepSourceUserIDs, now) //nolint:errcheck // deliberately dropped, see doc comment above
 }
 
 // scoredCandidate pairs an LFX user match with the identities and confidence
@@ -322,7 +349,9 @@ func (e *Enricher) enrichMultipleMatches(ctx context.Context, projectID *uint, c
 	rankCandidates(scored)
 
 	total := len(scored)
+	keepSourceUserIDs := make([]string, 0, len(scored))
 	for i, sc := range scored {
+		keepSourceUserIDs = append(keepSourceUserIDs, strings.TrimSpace(sc.user.ID))
 		if sc.identityErr != nil {
 			// A nonfatal failure (fatal ones short-circuited during fetching)
 			// is recorded as this profile's own row and must not abort the
@@ -343,6 +372,10 @@ func (e *Enricher) enrichMultipleMatches(ctx context.Context, projectID *uint, c
 			return err
 		}
 	}
+	// This lookup's full profile set is now known (every scored candidate,
+	// including ones whose identity fetch merely failed this run - only a
+	// profile LFX no longer returns at all should be retired).
+	e.retireStaleProfiles(projectID, candidate, keepSourceUserIDs, now)
 	return nil
 }
 

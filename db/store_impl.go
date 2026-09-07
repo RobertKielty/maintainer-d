@@ -1004,6 +1004,40 @@ func (s *SQLStore) AdoptMaintainerIdentityObservations(maintainerID, projectID u
 	return result.RowsAffected, result.Error
 }
 
+// RetireStaleMaintainerIdentityObservations deletes source_user_id-keyed
+// rows for one candidate (source, project, sourceRef) that are absent from
+// the latest lookup and older than observedBefore. An enrichment upsert only
+// ever touches the profiles a given search actually returned, so a profile
+// that used to match and no longer does (LFX resolved a duplicate, a
+// maintainer's identity changed) would otherwise linger forever, inflating
+// the profile count and keeping a stale "chosen"/"duplicate" badge alive.
+// keepSourceUserIDs lists the profiles the current lookup did return; pass
+// an empty slice to retire every previously recorded profile for this
+// candidate (the current lookup found none). Rows with no SourceUserID
+// (unmatched/no-handle observations) are never touched - they aren't part
+// of the profile set this retires.
+func (s *SQLStore) RetireStaleMaintainerIdentityObservations(source string, projectID *uint, sourceRef string, keepSourceUserIDs []string, observedBefore time.Time) (int64, error) {
+	source = strings.TrimSpace(source)
+	sourceRef = strings.TrimSpace(sourceRef)
+	if source == "" {
+		return 0, fmt.Errorf("maintainer identity observation source is required")
+	}
+	if sourceRef == "" {
+		return 0, fmt.Errorf("source ref is required")
+	}
+	query := s.db.Where("source = ? AND source_ref = ? AND source_user_id != '' AND observed_at < ?", source, sourceRef, observedBefore)
+	if projectID == nil {
+		query = query.Where("project_id IS NULL")
+	} else {
+		query = query.Where("project_id = ?", *projectID)
+	}
+	if len(keepSourceUserIDs) > 0 {
+		query = query.Where("source_user_id NOT IN ?", keepSourceUserIDs)
+	}
+	result := query.Delete(&model.MaintainerIdentityObservation{})
+	return result.RowsAffected, result.Error
+}
+
 func (s *SQLStore) GetLatestMaintainerIdentityObservation(source string, maintainerID uint) (*model.MaintainerIdentityObservation, error) {
 	source = strings.TrimSpace(source)
 	if source == "" {
