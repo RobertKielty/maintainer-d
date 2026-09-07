@@ -5,6 +5,12 @@ metadata:
   namespace: maintainerd
 spec:
   schedule: "0 * * * *"
+  # LFX_AUTH_TOKEN expires in hours and is never stored in the server secret
+  # (see maintainerd-server-env.yaml.tmpl), so an unattended hourly run would
+  # crash-loop on a missing token every time. Keep suspended until LFX
+  # provisions a renewable M2M credential; until then, dot-project-sync is
+  # run manually with a pasted per-session token.
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
