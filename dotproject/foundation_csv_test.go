@@ -38,13 +38,31 @@ Graduated,Prometheus,Carol Example,Grafana,carol,
 	assert.False(t, ok, "project matching is exact after trimming")
 }
 
-func TestParseFoundationMaintainersCSV_LineNumberUsesRowStart(t *testing.T) {
+func TestParseFoundationMaintainersCSV_LineNumberPointsAtGitHubField(t *testing.T) {
 	t.Parallel()
 
+	// The quoted name spans lines 2-3, putting the GitHub handle on line 3.
+	// Provenance must blame and permalink the handle's line, not the
+	// record's first line - otherwise the stored PR/review evidence
+	// describes the wrong maintainer field.
 	index, err := ParseFoundationMaintainersCSV(strings.NewReader(",Project,Maintainer Name,Company,Github Name\nGraduated,Kubernetes,\"Alice\nExample\",Acme,AliceExample\n"))
 	require.NoError(t, err)
 
 	alice, ok := index.Lookup("Kubernetes", "aliceexample")
 	require.True(t, ok)
-	assert.Equal(t, 2, alice.LineNumber)
+	assert.Equal(t, 3, alice.LineNumber)
+}
+
+func TestParseFoundationMaintainersCSV_RaggedRowDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	// A row shorter than the Github Name column must not panic in FieldPos;
+	// it has no handle, so it is skipped.
+	index, err := ParseFoundationMaintainersCSV(strings.NewReader(",Project,Maintainer Name,Company,Github Name\nGraduated,Kubernetes\nGraduated,Kubernetes,Alice Example,Acme,AliceExample\n"))
+	require.NoError(t, err)
+
+	alice, ok := index.Lookup("Kubernetes", "aliceexample")
+	require.True(t, ok)
+	assert.Equal(t, 3, alice.LineNumber)
+	assert.Len(t, index.Records, 1)
 }

@@ -71,7 +71,16 @@ func ParseFoundationMaintainersCSV(r io.Reader) (*FoundationMaintainerIndex, err
 		if err != nil {
 			return nil, fmt.Errorf("read foundation csv row: %w", err)
 		}
-		lineNumber, _ := reader.FieldPos(0)
+		// Provenance (permalink + blame) must point at the line holding the
+		// GitHub handle: a quoted multiline field earlier in the record would
+		// make the record's first line blame the wrong commit. Ragged rows
+		// (FieldsPerRecord is -1) too short to hold the handle fall back to
+		// the record's first line; they are skipped below anyway.
+		posField := 0
+		if githubCol < len(row) {
+			posField = githubCol
+		}
+		lineNumber, _ := reader.FieldPos(posField)
 		if project := strings.TrimSpace(csvValue(row, projectCol)); project != "" {
 			currentProject = project
 		}
