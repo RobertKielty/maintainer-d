@@ -84,6 +84,8 @@ type fakeGitHubServer struct {
 	reviewsJSON   string
 	graphQLStatus int    // non-zero: fail the blame query with this HTTP status
 	prStatus      int    // non-zero: fail the commit->PR listing with this HTTP status
+	reviewsStatus int    // non-zero: fail the PR review listing with this HTTP status
+	compareStatus int    // non-zero: fail the compare endpoint with this HTTP status
 	prHeadSHA     string // non-empty: the merged PR's final head SHA
 
 	// compareStatusByHead maps a review head SHA to the status the compare
@@ -139,6 +141,11 @@ func (f *fakeGitHubServer) handler() http.HandlerFunc {
 			]`))
 		case "/repos/example-org/example-repo/pulls/42/reviews":
 			f.reviewCalls++
+			if f.reviewsStatus != 0 {
+				w.WriteHeader(f.reviewsStatus)
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			reviews := f.reviewsJSON
 			if reviews == "" {
@@ -147,6 +154,11 @@ func (f *fakeGitHubServer) handler() http.HandlerFunc {
 			_, _ = w.Write([]byte(reviews))
 		default:
 			if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/example-org/example-repo/compare/deadbeef..."); ok {
+				if f.compareStatus != 0 {
+					w.WriteHeader(f.compareStatus)
+					_, _ = w.Write([]byte(`{}`))
+					return
+				}
 				status := f.compareStatusByHead[rest]
 				if status == "" {
 					status = "identical"
@@ -405,6 +417,43 @@ func TestResolveCachesFailedPRLookups(t *testing.T) {
 	}
 	if fake.prCalls != 1 {
 		t.Errorf("prCalls = %d, want 1 (a failed PR lookup must be cached like a successful one)", fake.prCalls)
+	}
+}
+
+func TestResolveErrorsWhenReviewListingFails(t *testing.T) {
+	fake := &fakeGitHubServer{reviewsStatus: http.StatusBadGateway}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+
+	// A transient failure listing reviews must surface as an error, never as
+	// a nil-error "unknown": observation writers only preserve previously
+	// recorded evidence when Resolve errors, so a silent unknown would
+	// overwrite an approved row with a downgrade.
+	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2); err == nil {
+		t.Fatal("expected error from failed review listing, got nil")
+	}
+}
+
+func TestResolveErrorsWhenCompareFails(t *testing.T) {
+	// The approving review's head differs from both the blamed commit and the
+	// PR head, forcing the compare call - which fails.
+	fake := &fakeGitHubServer{
+		reviewsJSON: `[
+			{"state":"APPROVED","commit_id":"feedface","user":{"login":"example-human","type":"User"}}
+		]`,
+		compareStatus: http.StatusBadGateway,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+
+	// Same policy as a failed review listing: propagate so callers keep the
+	// previously recorded observation instead of persisting a downgrade.
+	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2); err == nil {
+		t.Fatal("expected error from failed compare, got nil")
 	}
 }
 

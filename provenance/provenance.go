@@ -204,11 +204,11 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, sha string
 	for {
 		reviews, resp, err := r.Client.PullRequests.ListReviews(ctx, owner, repo, pr.GetNumber(), opts)
 		if err != nil {
-			// A failed review lookup is unresolvable, not negative evidence - it
-			// must not surface as an error that aborts resolution of the PR
-			// number/URL we already have.
-			info.reviewState = ReviewStateUnknown
-			return info, nil //nolint:nilerr
+			// A transient API failure must propagate: writers only preserve a
+			// previously recorded observation when Resolve errors, so returning
+			// a nil-error "unknown" here would overwrite an already-captured
+			// approved state with a downgrade and cache it for the whole run.
+			return prInfo{}, fmt.Errorf("list reviews for PR %d: %w", pr.GetNumber(), err)
 		}
 		for _, review := range reviews {
 			// Only a verifiable human approval counts: the review state feeds
@@ -245,10 +245,9 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, sha string
 			}
 			cmp, _, err := r.Client.Repositories.CompareCommits(ctx, owner, repo, sha, reviewHead, nil)
 			if err != nil {
-				// Unresolvable, not negative evidence - same policy as a
-				// failed review listing.
-				info.reviewState = ReviewStateUnknown
-				return info, nil //nolint:nilerr
+				// Same policy as a failed review listing: propagate so the
+				// caller keeps the previously recorded observation.
+				return prInfo{}, fmt.Errorf("compare %s...%s: %w", sha, reviewHead, err)
 			}
 			// "ahead" or "identical" means the reviewed head contains the
 			// blamed commit; "behind"/"diverged" means the approval never saw
