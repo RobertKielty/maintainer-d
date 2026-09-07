@@ -95,3 +95,18 @@ func TestParseProjectMaintainerEntriesRejectsNonScalarMember(t *testing.T) {
 	assert.Equal(t, ParseStatusInvalidShape, status)
 	assert.Equal(t, "project-maintainers member at line 6 is not a plain string", parseErr)
 }
+
+func TestParseProjectMaintainerEntriesRejectsNonStringScalarMember(t *testing.T) {
+	// A YAML null, bool, or number is still a ScalarNode, so the Kind check
+	// alone lets `- null` or `- 123` through as a bogus GitHub handle. The
+	// tag must be checked too.
+	_, status, parseErr := ParseProjectMaintainerEntries(`maintainers:
+  - teams:
+      - name: project-maintainers
+        members:
+          - alice-example
+          - null
+`)
+	assert.Equal(t, ParseStatusInvalidShape, status)
+	assert.Equal(t, "project-maintainers member at line 6 is not a plain string", parseErr)
+}

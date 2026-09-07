@@ -358,8 +358,11 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 				// A non-scalar member (e.g. `- {github: alice}`) has an
 				// empty Value; skipping it silently would report a parsed
 				// roster missing that maintainer, so the whole file must be
-				// rejected as malformed instead.
-				if member.Kind != yaml.ScalarNode {
+				// rejected as malformed instead. ScalarNode also covers YAML
+				// nulls, booleans, and numbers (`- null`, `- 123`), so the
+				// string tag must be checked too, or those become bogus
+				// handles instead of being rejected.
+				if member.Kind != yaml.ScalarNode || member.ShortTag() != "!!str" {
 					return nil, ParseStatusInvalidShape, fmt.Sprintf(
 						"project-maintainers member at line %d is not a plain string", member.Line)
 				}
