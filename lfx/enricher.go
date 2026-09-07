@@ -224,6 +224,13 @@ func (e *Enricher) enrichCandidate(ctx context.Context, projectID *uint, candida
 	summary.Attempted++
 	users, matched, err := e.searchUsers(ctx, githubUser, email)
 	if err != nil {
+		// A done run context is not this candidate's failure, and recording
+		// it would overwrite the candidate's previously good row (the upsert
+		// replaces every column). Propagate so the caller stops the run
+		// cleanly instead of writing a spurious error row per candidate.
+		if ctx.Err() != nil {
+			return PlatformAccessError(err)
+		}
 		if writeErr := e.writeObservation(projectID, candidate, nil, nil, now, "error", err.Error(), ""); writeErr != nil {
 			return fmt.Errorf("%w; failed to record LFX error observation: %v", PlatformAccessError(err), writeErr)
 		}
@@ -238,6 +245,11 @@ func (e *Enricher) enrichCandidate(ctx context.Context, projectID *uint, candida
 		user := users[0]
 		identities, err := e.Client.GetUserIdentities(ctx, user.ID)
 		if err != nil {
+			// Same run-context guard as above: never trade a good row for a
+			// deadline artifact.
+			if ctx.Err() != nil {
+				return PlatformAccessError(err)
+			}
 			// The search already identified the profile, so record it on the
 			// error row: without SourceUserID the UI's per-profile grouping
 			// cannot tie the failure to the profile, leaving an older
@@ -278,12 +290,19 @@ func (e *Enricher) enrichMultipleMatches(ctx context.Context, projectID *uint, c
 		identities, err := e.Client.GetUserIdentities(ctx, user.ID)
 		sc := scoredCandidate{user: user, identities: identities, identityErr: err}
 		if err != nil {
+			classified := PlatformAccessError(err)
+			// A done run context dooms every remaining fetch and is not a
+			// per-profile failure: recording it would overwrite this
+			// profile's previously good row via the upsert. Propagate so the
+			// caller stops the run cleanly.
+			if ctx.Err() != nil {
+				return classified
+			}
 			// Per-profile tolerance only covers nonfatal failures (timeouts,
 			// 5xx, transport). A fatal classification (dead token, rate
 			// limit) would hit every remaining request too, so stop fetching
 			// immediately - after recording this profile's failure as its own
 			// row - instead of burning a doomed request per remaining profile.
-			classified := PlatformAccessError(err)
 			var fatal dotproject.FatalSyncError
 			if errors.As(classified, &fatal) {
 				// No summary.Errored++ here: EnrichProject counts every
