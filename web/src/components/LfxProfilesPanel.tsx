@@ -111,7 +111,7 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
               no 1:1 mapping between profile IDs and GitHub identities.{" "}
               {hasChosen
                 ? "The row marked “Chosen” is the one maintainer-d treats as canonical; the rest are shown here to help troubleshoot which profile is authoritative."
-                : "No row is currently marked “Chosen”: the last enrichment run could not fetch identities for any of these profiles, so none has been selected as canonical yet."}
+                : "No row is currently marked “Chosen”: none of these profiles has been selected as canonical yet."}
             </p>
           )}
 
