@@ -330,12 +330,21 @@ func (s *Syncer) syncProject(ctx context.Context, project model.Project) (string
 	}
 	state := buildSyncState(project.ID, now, result)
 	patch := buildProjectPatch(now, status, result)
-	if err := s.Store.PersistDotProjectSync(project.ID, patch, state); err != nil {
-		return status, EnrichmentSummary{}, AutoAddSummary{}, nil, err
-	}
 	var gistReportRow *GistReportRow
 	if row, ok := BuildGistReportRow(project, result); ok {
 		gistReportRow = &row
+	}
+	// The freshness timestamp drives ListProjects' anti-starvation ordering
+	// (oldest dot_project_last_synced_at first), so it must only advance once
+	// enrichment and auto-add have both run to completion for this project.
+	// Persisting it right after discovery let a deadline mid-enrichment mark
+	// a partially processed project as freshly synced, pushing it behind
+	// every older project on the next run and starving it indefinitely.
+	persist := func() error {
+		if err := s.Store.PersistDotProjectSync(project.ID, patch, state); err != nil {
+			return fmt.Errorf("persist sync error for project %d: %w", project.ID, err)
+		}
+		return nil
 	}
 	enrichment := EnrichmentSummary{}
 	if s.Enricher != nil {
@@ -343,6 +352,12 @@ func (s *Syncer) syncProject(ctx context.Context, project model.Project) (string
 		if err != nil {
 			if enrichment.Errored == 0 {
 				enrichment.Errored++
+			}
+			if ctx.Err() != nil {
+				patch.DotProjectLastSyncedAt = project.DotProjectLastSyncedAt
+			}
+			if persistErr := persist(); persistErr != nil {
+				return status, enrichment, AutoAddSummary{}, gistReportRow, persistErr
 			}
 			// Fatality is decided at the source (lfx.PlatformAccessError wraps
 			// only 401 and 429 in FatalSyncError; 403 is deliberately nonfatal
@@ -358,8 +373,17 @@ func (s *Syncer) syncProject(ctx context.Context, project model.Project) (string
 			if autoAdd.Errored == 0 {
 				autoAdd.Errored++
 			}
+			if ctx.Err() != nil {
+				patch.DotProjectLastSyncedAt = project.DotProjectLastSyncedAt
+			}
+			if persistErr := persist(); persistErr != nil {
+				return status, enrichment, autoAdd, gistReportRow, persistErr
+			}
 			return status, enrichment, autoAdd, gistReportRow, err
 		}
+	}
+	if err := persist(); err != nil {
+		return status, enrichment, autoAdd, gistReportRow, err
 	}
 	return status, enrichment, autoAdd, gistReportRow, nil
 }

@@ -396,6 +396,42 @@ func TestSyncAllTreatsEnricherTimeoutAsProjectError(t *testing.T) {
 	assert.Equal(t, 2, summary.Enrichment.Errored)
 }
 
+// cancelingEnricher cancels the run context and then fails, simulating an
+// enrichment call that discovers the deadline has passed mid-request.
+type cancelingEnricher struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (c cancelingEnricher) EnrichProject(_ context.Context, _ model.Project, _ *DiscoveryResult) (EnrichmentSummary, error) {
+	c.cancel()
+	return EnrichmentSummary{}, c.err
+}
+
+func TestSyncProjectPreservesSyncTimestampWhenEnrichmentHitsDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	previous := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeSyncStore{}
+	syncer := &Syncer{
+		Store:      store,
+		Discoverer: &fakeDiscoveryRunner{results: map[uint]*DiscoveryResult{7: {RepoExists: true}}},
+		Enricher:   cancelingEnricher{cancel: cancel, err: fmt.Errorf("boom: %w", context.Canceled)},
+		Now:        func() time.Time { return time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) },
+	}
+
+	project := model.Project{Model: gorm.Model{ID: 7}, DotProjectLastSyncedAt: &previous}
+	_, _, _, _, err := syncer.syncProject(ctx, project)
+	require.Error(t, err)
+
+	persisted, ok := store.persisted[7]
+	require.True(t, ok, "discovery data must still be persisted despite the enrichment deadline")
+	require.NotNil(t, persisted.patch.DotProjectLastSyncedAt)
+	assert.True(t, persisted.patch.DotProjectLastSyncedAt.Equal(previous),
+		"a deadline mid-enrichment must not advance the sync timestamp, or ListProjects' anti-starvation order pushes this partially processed project to the back")
+}
+
 func TestSyncAllSkipsArchivedAndMaintainerD(t *testing.T) {
 	t.Parallel()
 
