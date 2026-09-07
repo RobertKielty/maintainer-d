@@ -61,11 +61,12 @@ func (f *fakeDiscoveryRunner) Discover(_ context.Context, project model.Project)
 }
 
 type fakeMaintainerEnricher struct {
-	err error
+	summary EnrichmentSummary
+	err     error
 }
 
 func (f fakeMaintainerEnricher) EnrichProject(_ context.Context, _ model.Project, _ *DiscoveryResult) (EnrichmentSummary, error) {
-	return EnrichmentSummary{}, f.err
+	return f.summary, f.err
 }
 
 func TestSyncProjectPersistsAdoptedDiscovery(t *testing.T) {
@@ -373,7 +374,10 @@ func TestSyncAllTreatsEnricherTimeoutAsProjectError(t *testing.T) {
 		// A single slow LFX request (per-request timeout, run context still
 		// healthy) is not wrapped in FatalSyncError, so the run must record
 		// the project as errored and keep going.
-		Enricher: fakeMaintainerEnricher{err: fmt.Errorf("LFX Platform request timed out: %w", context.DeadlineExceeded)},
+		Enricher: fakeMaintainerEnricher{
+			summary: EnrichmentSummary{Attempted: 3, Matched: 2, Errored: 1},
+			err:     fmt.Errorf("LFX Platform request timed out: %w", context.DeadlineExceeded),
+		},
 	}
 
 	summary, err := syncer.SyncAll(context.Background())
@@ -384,6 +388,12 @@ func TestSyncAllTreatsEnricherTimeoutAsProjectError(t *testing.T) {
 	assert.False(t, summary.StoppedEarly)
 	require.Contains(t, discoverer.seen, uint(1))
 	require.Contains(t, discoverer.seen, uint(2))
+	// The errored projects still enriched maintainers before failing; the
+	// ordinary-error branch must fold those partial counters into the run
+	// summary instead of dropping them.
+	assert.Equal(t, 6, summary.Enrichment.Attempted)
+	assert.Equal(t, 4, summary.Enrichment.Matched)
+	assert.Equal(t, 2, summary.Enrichment.Errored)
 }
 
 func TestSyncAllSkipsArchivedAndMaintainerD(t *testing.T) {

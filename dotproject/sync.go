@@ -144,6 +144,16 @@ func (s *Syncer) SyncAll(ctx context.Context) (SyncSummary, error) {
 		}
 		summary.Total++
 		status, enrichment, autoAdd, gistReportRow, err := s.syncProject(ctx, project)
+		// The project may have persisted work (enrichment rows, auto-added
+		// maintainers) before an error surfaced; fold its partial counters in
+		// unconditionally so every exit path - ordinary error, fatal abort,
+		// deadline break, success - reports what actually happened instead of
+		// dropping the interrupted project's attempted/matched/error metrics.
+		summary.Enrichment.add(enrichment)
+		summary.AutoAdd.add(autoAdd)
+		if gistReportRow != nil {
+			summary.GistReportRows = append(summary.GistReportRows, *gistReportRow)
+		}
 		if err != nil {
 			// A run-level deadline being exhausted mid-project is expected
 			// under load, not a broken integration: stop cleanly and let the
@@ -159,15 +169,6 @@ func (s *Syncer) SyncAll(ctx context.Context) (SyncSummary, error) {
 			// must stay an ordinary project error while the run has budget
 			// left.
 			if ctx.Err() != nil {
-				// The interrupted project may have already persisted work
-				// (enrichment rows, auto-added maintainers) before the clock
-				// ran out; fold its partial counters into the summary so the
-				// audit metrics reflect what actually happened.
-				summary.Enrichment.add(enrichment)
-				summary.AutoAdd.add(autoAdd)
-				if gistReportRow != nil {
-					summary.GistReportRows = append(summary.GistReportRows, *gistReportRow)
-				}
 				summary.StoppedEarly = true
 				processed = i
 				summary.RemainingProjects = totalProjects - i - 1
@@ -188,13 +189,8 @@ func (s *Syncer) SyncAll(ctx context.Context) (SyncSummary, error) {
 			summary.recordError(projectLabel(project), err)
 			continue
 		}
-		summary.Enrichment.add(enrichment)
-		summary.AutoAdd.add(autoAdd)
-		if gistReportRow != nil {
-			summary.GistReportRows = append(summary.GistReportRows, *gistReportRow)
-			if strings.TrimSpace(gistReportRow.Warning) != "" {
-				summary.recordWarning(projectLabel(project), gistReportRow.Warning)
-			}
+		if gistReportRow != nil && strings.TrimSpace(gistReportRow.Warning) != "" {
+			summary.recordWarning(projectLabel(project), gistReportRow.Warning)
 		}
 		summary.Synced++
 		switch status {
