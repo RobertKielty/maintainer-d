@@ -989,7 +989,7 @@ sops-envsubst-encrypt-server:
 	if [ -z "$(SOPS_AGE_KEY)" ]; then \
 		echo "Set SOPS_AGE_KEY to the age public key used for encryption."; exit 1; \
 	fi; \
-	for var in GITHUB_API_TOKEN GITHUB_WEBHOOK_SECRET LFX_AUTH_TOKEN; do \
+	for var in GITHUB_API_TOKEN GITHUB_WEBHOOK_SECRET FOSSA_API_TOKEN ORG REPO; do \
 		if [ -z "$${!var:-}" ]; then \
 			echo "Missing required env var: $$var"; exit 1; \
 		fi; \
