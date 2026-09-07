@@ -39,7 +39,8 @@
 .count {
   padding: 6px 12px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
