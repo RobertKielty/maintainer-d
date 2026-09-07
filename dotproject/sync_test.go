@@ -481,6 +481,51 @@ func TestSyncAllStopsCleanlyWhenRunContextExpires(t *testing.T) {
 		"a project interrupted by the run deadline must not be persisted as errored with a fresh sync timestamp - that would misreport it and push it to the back of the anti-starvation order")
 }
 
+// unrelatedFailureDiscoveryRunner cancels the run context while failing one
+// project for a reason that has nothing to do with the deadline, simulating
+// an ordinary failure racing the clock.
+type unrelatedFailureDiscoveryRunner struct {
+	failOn uint
+	cancel context.CancelFunc
+	err    error
+}
+
+func (u *unrelatedFailureDiscoveryRunner) Discover(ctx context.Context, project model.Project) (*DiscoveryResult, error) {
+	if project.ID == u.failOn {
+		u.cancel()
+		return nil, u.err
+	}
+	return nil, ctx.Err()
+}
+
+func TestSyncAllRecordsUnrelatedErrorRacingTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := &fakeSyncStore{
+		projects: []model.Project{
+			{Model: gorm.Model{ID: 1}, Name: "Project One", GitHubOrg: "org-one"},
+			{Model: gorm.Model{ID: 2}, Name: "Project Two", GitHubOrg: "org-two"},
+		},
+	}
+	dbErr := fmt.Errorf("database exploded")
+	syncer := &Syncer{
+		Store:      store,
+		Discoverer: &unrelatedFailureDiscoveryRunner{failOn: 1, cancel: cancel, err: dbErr},
+	}
+
+	// Project One fails for a non-deadline reason just as the run context
+	// expires: it must be recorded as that project's error, not relabelled
+	// as an expected timeout stop. Project Two then surfaces the real
+	// context error and stops the run early.
+	summary, err := syncer.SyncAll(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, summary.Errored, "the unrelated failure must be recorded as a project error")
+	require.Len(t, summary.ErrorSummaries, 1)
+	assert.Contains(t, summary.ErrorSummaries[0], "database exploded")
+	assert.True(t, summary.StoppedEarly, "the expired run context still stops the run on the next project")
+}
+
 func TestSyncAllTreatsRequestTimeoutAsProjectError(t *testing.T) {
 	t.Parallel()
 

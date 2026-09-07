@@ -167,8 +167,13 @@ func (s *Syncer) SyncAll(ctx context.Context) (SyncSummary, error) {
 			// slow request also reports errors.Is(err,
 			// context.DeadlineExceeded) via http.Client.Timeout, and that
 			// must stay an ordinary project error while the run has budget
-			// left.
-			if ctx.Err() != nil {
+			// left. The error must also actually carry the run context's
+			// error: an unrelated failure (say, a database persist error)
+			// that races the deadline must be recorded as this project's
+			// error, not silently relabelled as an expected timeout - the
+			// next project's first context-aware call fails with the real
+			// context error and stops the run anyway.
+			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 				summary.StoppedEarly = true
 				processed = i
 				summary.RemainingProjects = totalProjects - i - 1
