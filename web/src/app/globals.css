@@ -17,6 +17,7 @@ body {
   --md-chip-bg: rgba(15, 23, 42, 0.12);
   --md-chip-text: #0b1220;
   --md-link: #d62293;
+  --md-link-blue: #2563eb;
   --md-shadow: 0 12px 24px rgba(0, 0, 0, 0.08);
   --md-modal-backdrop: rgba(15, 23, 42, 0.45);
   --md-modal-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
@@ -45,7 +46,11 @@ body {
   --md-surface-strong: rgba(255, 255, 255, 0.1);
   --md-chip-bg: rgba(255, 255, 255, 0.14);
   --md-chip-text: #f2f4f8;
-  --md-link: #d62293;
+  /* Lighter than the light-theme brand pink/blue: #d62293/#2563eb only hit
+     ~3.2:1 against this theme's card background, short of the 4.5:1 AA
+     minimum for link text. */
+  --md-link: #ff6ec7;
+  --md-link-blue: #60a5fa;
   --md-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
   --md-modal-backdrop: rgba(10, 12, 16, 0.7);
   --md-modal-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);

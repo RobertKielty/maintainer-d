@@ -93,7 +93,7 @@
 .lfidLink {
   display: block;
   font-weight: 600;
-  color: #d62293;
+  color: var(--md-link);
   text-decoration: none;
 }
 

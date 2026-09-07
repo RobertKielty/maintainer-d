@@ -94,7 +94,7 @@
 .projectLink {
   display: block;
   font-size: 12px;
-  color: #d62293;
+  color: var(--md-link);
   font-weight: 600;
   text-decoration: none;
 }
@@ -106,7 +106,7 @@
 .sourceLineLink {
   display: block;
   font-size: 12px;
-  color: #2563eb;
+  color: var(--md-link-blue);
   text-decoration: none;
   word-break: break-all;
   margin-top: 2px;
@@ -126,7 +126,7 @@
 
 .prLink {
   font-size: 12px;
-  color: #2563eb;
+  color: var(--md-link-blue);
   font-weight: 600;
   text-decoration: none;
 }
