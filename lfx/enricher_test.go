@@ -444,6 +444,12 @@ func TestEnrichCandidateToleratesPartialIdentityFetchFailure(t *testing.T) {
 	assert.Equal(t, "error", bySourceUserID["sfid-broken"].MatchStatus)
 	assert.Contains(t, []string{"chosen", "duplicate"}, bySourceUserID["sfid-ok"].MatchStatus)
 	assert.Equal(t, 1, summary.Errored, "a tolerated per-profile failure must still count as an error, not vanish from the run summary")
+
+	// The error row's identities request failed, so no count was measured:
+	// nil means unmeasured, 0 would falsely claim "measured zero identities".
+	assert.Nil(t, bySourceUserID["sfid-broken"].IdentityCount)
+	require.NotNil(t, bySourceUserID["sfid-ok"].IdentityCount, "a successful fetch must record its measured count")
+	assert.Equal(t, 0, *bySourceUserID["sfid-ok"].IdentityCount)
 }
 
 func TestRankCandidatesIsDeterministicOnFullTie(t *testing.T) {

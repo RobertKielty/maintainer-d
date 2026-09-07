@@ -513,8 +513,13 @@ func (e *Enricher) writeRawObservation(projectID *uint, candidate candidate, now
 					observation.SourceLastModifiedAt = &modifiedAt
 				}
 			}
-			identityCount := len(payload.Identities)
-			observation.IdentityCount = &identityCount
+			// An error row's payload carries the user but the identities
+			// request failed, so no count was measured - persisting 0 would
+			// claim "measured zero identities". Leave it nil (unmeasured).
+			if status != "error" {
+				identityCount := len(payload.Identities)
+				observation.IdentityCount = &identityCount
+			}
 		}
 	}
 	_, err := e.Store.UpsertMaintainerIdentityObservation(observation)
