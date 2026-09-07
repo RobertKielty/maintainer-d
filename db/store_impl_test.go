@@ -693,6 +693,47 @@ func TestUpsertMaintainerIdentityObservationAdoptsOrphanRow(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+func TestUpsertMaintainerIdentityObservationDoesNotAdoptOrphanForDifferentHandleSharingProfile(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	// Two GitHub handles resolved to the same LFX profile in the same
+	// project - an orphan row for the first handle must not be adopted by
+	// the second handle's upsert just because source_user_id matches.
+	projectID := uint(7)
+	orphan, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:    &projectID,
+		Source:       "lfx",
+		SourceRef:    "github:handle-one",
+		SourceUserID: "sfid-shared",
+		MatchStatus:  "matched",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.Nil(t, orphan.MaintainerID)
+
+	maintainerID := uint(31)
+	adopted, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		MaintainerID: &maintainerID,
+		ProjectID:    &projectID,
+		Source:       "lfx",
+		SourceRef:    "github:handle-two",
+		SourceUserID: "sfid-shared",
+		MatchStatus:  "matched",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, orphan.ID, adopted.ID, "upsert must not adopt a different handle's orphan row")
+
+	var refetchedOrphan model.MaintainerIdentityObservation
+	require.NoError(t, db.First(&refetchedOrphan, orphan.ID).Error)
+	assert.Nil(t, refetchedOrphan.MaintainerID, "the first handle's orphan row must remain unadopted")
+
+	var count int64
+	require.NoError(t, db.Model(&model.MaintainerIdentityObservation{}).Count(&count).Error)
+	assert.Equal(t, int64(2), count, "each handle must keep its own row")
+}
+
 func TestAdoptMaintainerIdentityObservations(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewSQLStore(db)

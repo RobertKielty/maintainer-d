@@ -942,8 +942,12 @@ func (s *SQLStore) UpsertMaintainerIdentityObservation(observation *model.Mainta
 			// Adopt a row written before the maintainer existed (the
 			// observation is recorded earlier in the sync loop than the
 			// maintainer is created), instead of leaving it orphaned with a
-			// NULL maintainer_id and inserting a duplicate.
-			if err := matchQuery("maintainer_id IS NULL").Find(&existing).Error; err != nil {
+			// NULL maintainer_id and inserting a duplicate. Constrained to
+			// the same source_ref so that two handles sharing one LFX
+			// profile in the same project cannot adopt each other's rows.
+			if err := matchQuery("maintainer_id IS NULL").
+				Where("source_ref = ?", observation.SourceRef).
+				Find(&existing).Error; err != nil {
 				return nil, err
 			}
 		}
