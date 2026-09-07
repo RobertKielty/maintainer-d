@@ -5338,6 +5338,7 @@ func (s *server) loadLFXFoundationMaintainers(ctx context.Context, options lfxEn
 	}
 	index.CommitSHA = commitSHA
 	index.SourceURL = fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s?plain=1", owner, repo, commitSHA, path)
+	index.Branch = ref
 	return index, nil
 }
 

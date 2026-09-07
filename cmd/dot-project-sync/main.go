@@ -283,6 +283,7 @@ func loadFoundationMaintainers(ctx context.Context, client *github.Client, cfg s
 	}
 	index.CommitSHA = commitSHA
 	index.SourceURL = foundationCSVBlobURL(owner, repo, commitSHA, path)
+	index.Branch = ref
 	return index, nil
 }
 

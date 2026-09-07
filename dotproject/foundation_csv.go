@@ -25,6 +25,12 @@ type FoundationMaintainerIndex struct {
 
 	SourceURL string
 	CommitSHA string
+	// Branch is the configured branch the CSV is read from - distinct from
+	// CommitSHA, which pins blame to a snapshot, and from any ref parsed out
+	// of SourceURL, which also encodes CommitSHA once a snapshot is pinned.
+	// PR-selection disambiguation needs the branch name, since a PR's base
+	// can never equal a bare commit SHA.
+	Branch string
 }
 
 func ParseFoundationMaintainersCSV(r io.Reader) (*FoundationMaintainerIndex, error) {

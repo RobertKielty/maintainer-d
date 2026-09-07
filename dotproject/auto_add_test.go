@@ -514,3 +514,147 @@ func TestAutoMaintainerAdderPropagatesExpiredRunContext(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 0, summary.AuditFailures, "an expired run context must not be recorded as per-row audit failures")
 }
+
+// autoAddFakeGitHubServer serves the endpoints Resolve depends on for a
+// single blamed commit associated with two merged PRs into different base
+// branches, mirroring provenance's own fakeGitHubServer. It exists here
+// (rather than reusing that one) because it is unexported in package
+// provenance.
+type autoAddFakeGitHubServer struct{}
+
+func (f *autoAddFakeGitHubServer) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/graphql":
+			_, _ = w.Write([]byte(`{"data":{"repository":{"object":{"blame":{"ranges":[
+				{"startingLine":1,"endingLine":50,"commit":{"oid":"deadbeef"}}
+			]}}}}}`))
+		case "/repos/example-org/kubernetes/commits/deadbeef/pulls":
+			_, _ = w.Write([]byte(`[
+				{"number":77,"html_url":"https://github.com/example-org/kubernetes/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"develop"}},
+				{"number":42,"html_url":"https://github.com/example-org/kubernetes/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}}
+			]`))
+		case "/repos/example-org/kubernetes/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[{"state":"APPROVED","commit_id":"deadbeef","user":{"login":"example-human","type":"User"}}]`))
+		default:
+			if rest, ok := strings.CutPrefix(r.URL.Path, "/repos/example-org/kubernetes/compare/deadbeef..."); ok {
+				_ = rest
+				_, _ = w.Write([]byte(`{"status":"identical"}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}
+}
+
+func newAutoAddTestResolver(t *testing.T, srv *httptest.Server) *provenance.Resolver {
+	t.Helper()
+	client := github.NewClient(srv.Client())
+	baseURL, err := url.Parse(srv.URL + "/")
+	require.NoError(t, err)
+	client.BaseURL = baseURL
+	return provenance.NewResolver(client)
+}
+
+func TestResolveFoundationProvenanceUsesConfiguredBranchNotPinnedSHA(t *testing.T) {
+	t.Parallel()
+
+	fake := &autoAddFakeGitHubServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	index, err := ParseFoundationMaintainersCSV(strings.NewReader(`,Project,Maintainer Name,Company,Github Name
+Graduated,Kubernetes,Alice Example,Acme,AliceExample
+`))
+	require.NoError(t, err)
+	// SourceURL is built from the pinned commit SHA, exactly as the
+	// dot-project-sync and web-bff loaders do: the ref segment is "deadbeef",
+	// not a branch name. Branch carries the actual configured branch
+	// separately, as those loaders now also do.
+	index.SourceURL = "https://github.com/example-org/kubernetes/blob/deadbeef/project-maintainers.csv"
+	index.CommitSHA = "deadbeef"
+	index.Branch = "main"
+
+	store := newFakeAutoAddStore()
+	adder := &AutoMaintainerAdder{
+		Store:              store,
+		Foundation:         index,
+		CheckFoundationCSV: true,
+		AutoAddMaintainers: false,
+		Provenance:         newAutoAddTestResolver(t, srv),
+	}
+
+	_, err = adder.ProcessProject(context.Background(), model.Project{Model: gorm.Model{ID: 1}, Name: "Kubernetes"}, &DiscoveryResult{
+		DefaultBranch: "main",
+		MaintainersFile: FileDiscovery{
+			Exists: true,
+			Path:   ".project/maintainers.yaml",
+			// No BlobURL: dot-project provenance resolution is skipped so
+			// only the foundation-csv resolution is under test here.
+			Body: `maintainers:
+  - teams:
+      - name: project-maintainers
+        members:
+          - AliceExample
+`,
+		},
+	})
+	require.NoError(t, err)
+
+	var foundationRow *model.MaintainerIdentityObservation
+	for i := range store.observed {
+		if store.observed[i].Source == FoundationCSVSource {
+			foundationRow = &store.observed[i]
+		}
+	}
+	require.NotNil(t, foundationRow, "expected a foundation-csv observation to be recorded")
+	assert.Equal(t, 42, foundationRow.SourcePRNumber, "the commit's two merged PRs must disambiguate to the one based on the configured branch")
+	assert.Equal(t, provenance.ReviewStateApproved, foundationRow.SourceReviewState)
+}
+
+func TestResolveDotProjectProvenanceUsesDefaultBranchNotPinnedSHA(t *testing.T) {
+	t.Parallel()
+
+	fake := &autoAddFakeGitHubServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	store := newFakeAutoAddStore()
+	adder := &AutoMaintainerAdder{
+		Store:              store,
+		AutoAddMaintainers: false,
+		Provenance:         newAutoAddTestResolver(t, srv),
+	}
+
+	_, err := adder.ProcessProject(context.Background(), model.Project{Model: gorm.Model{ID: 1}, Name: "Kubernetes"}, &DiscoveryResult{
+		DefaultBranch: "main",
+		MaintainersFile: FileDiscovery{
+			Exists: true,
+			Path:   ".project/maintainers.yaml",
+			// BlobURL is fetched at the pinned commit SHA, exactly as
+			// discovery.go's fetchOptionalFile does via the GitHub API's
+			// html_url for content requested at a specific ref.
+			BlobURL:   "https://github.com/example-org/kubernetes/blob/deadbeef/.project/maintainers.yaml",
+			CommitSHA: "deadbeef",
+			Body: `maintainers:
+  - teams:
+      - name: project-maintainers
+        members:
+          - AliceExample
+`,
+		},
+	})
+	require.NoError(t, err)
+
+	var dotProjectRow *model.MaintainerIdentityObservation
+	for i := range store.observed {
+		if store.observed[i].Source == provenance.SourceDotProject {
+			dotProjectRow = &store.observed[i]
+		}
+	}
+	require.NotNil(t, dotProjectRow, "expected a dot-project observation to be recorded")
+	assert.Equal(t, 42, dotProjectRow.SourcePRNumber, "the commit's two merged PRs must disambiguate to the one based on the repo's default branch")
+	assert.Equal(t, provenance.ReviewStateApproved, dotProjectRow.SourceReviewState)
+}

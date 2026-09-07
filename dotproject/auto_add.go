@@ -178,7 +178,7 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 			maintainerID = &id
 		}
 
-		if err := a.writeDotProjectObservation(ctx, project, maintainerID, normalized, result.MaintainersFile, lineByHandle[normalized], now); err != nil {
+		if err := a.writeDotProjectObservation(ctx, project, maintainerID, normalized, result.MaintainersFile, result.DefaultBranch, lineByHandle[normalized], now); err != nil {
 			// An expired run context is the run's failure, not this row's:
 			// counting it as an audit failure and continuing would let a
 			// timed-out run finish as a non-partial success. Ordinary
@@ -415,10 +415,12 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 	if !ok {
 		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
-	// The blob URL's ref is the branch the CSV lives on; blame runs against
-	// the pinned snapshot SHA when one exists, but PR disambiguation needs
-	// the branch name (a PR's base can never equal a bare SHA).
-	branch := ref
+	// SourceURL is built from CommitSHA once a snapshot is pinned, so the ref
+	// parsed out of it is already a SHA, not a branch - PR disambiguation
+	// needs the configured branch name (a PR's base can never equal a bare
+	// SHA), so use the branch the loader recorded rather than deriving one
+	// from the blob URL.
+	branch := a.Foundation.Branch
 	if sha := strings.TrimSpace(a.Foundation.CommitSHA); sha != "" {
 		ref = sha
 	}
@@ -443,8 +445,8 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 // project-maintainers team of the dot-project maintainers.yaml file -
 // membership there is the current gatekeeping mechanism for official CNCF
 // project maintainer status.
-func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, project model.Project, maintainerID *uint, github string, file FileDiscovery, line int, now time.Time) error {
-	prov, reviewState, resolveErr := a.resolveDotProjectProvenance(ctx, project, file, line)
+func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, project model.Project, maintainerID *uint, github string, file FileDiscovery, branch string, line int, now time.Time) error {
+	prov, reviewState, resolveErr := a.resolveDotProjectProvenance(ctx, project, file, branch, line)
 	if resolveErr != nil {
 		// The upsert overwrites every provenance column, so writing the empty
 		// result of a failed lookup would blank evidence a healthy run already
@@ -511,7 +513,7 @@ func dotProjectLineURL(file FileDiscovery, line int) string {
 // a project-maintainers.yaml team-membership line. An unresolvable blob URL
 // reports ReviewStateUnknown with a nil error, never a negative signal. An
 // API error is returned so the caller can skip persisting the empty result.
-func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, project model.Project, file FileDiscovery, line int) (provenance.LineProvenance, string, error) {
+func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, project model.Project, file FileDiscovery, branch string, line int) (provenance.LineProvenance, string, error) {
 	if a.Provenance == nil || line <= 0 {
 		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
@@ -519,11 +521,10 @@ func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, p
 	if !ok {
 		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
-	// The blob URL's ref is the branch the maintainers file lives on; blame
-	// runs against the pinned snapshot SHA when one exists, but PR
-	// disambiguation needs the branch name (a PR's base can never equal a
-	// bare SHA).
-	branch := ref
+	// file.BlobURL is fetched at the pinned commit SHA, so the ref parsed out
+	// of it is already a SHA, not a branch - PR disambiguation needs the
+	// repo's actual default branch (a PR's base can never equal a bare SHA),
+	// passed in separately by the caller.
 	if sha := strings.TrimSpace(file.CommitSHA); sha != "" {
 		ref = sha
 	}
