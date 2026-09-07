@@ -462,7 +462,14 @@ export default function LFXPage() {
                     </div>
                     {activeRun.totalProjects > 0 ? (
                       <>
-                        <div className={styles.progressTrack}>
+                        <div
+                          className={styles.progressTrack}
+                          role="progressbar"
+                          aria-label="Projects processed"
+                          aria-valuemin={0}
+                          aria-valuemax={activeRun.totalProjects}
+                          aria-valuenow={activeRun.projectsProcessed}
+                        >
                           <div
                             className={styles.progressFill}
                             style={{ width: `${projectProgressPercent(activeRun)}%` }}
@@ -481,7 +488,14 @@ export default function LFXPage() {
                         ) : null}
                       </>
                     ) : null}
-                    <div className={styles.progressTrack}>
+                    <div
+                      className={styles.progressTrack}
+                      role="progressbar"
+                      aria-label="Candidates processed"
+                      aria-valuemin={0}
+                      aria-valuemax={activeRun.total}
+                      aria-valuenow={activeRun.processed}
+                    >
                       <div className={styles.progressFill} style={{ width: `${progressPercent(activeRun)}%` }} />
                     </div>
                     <div className={styles.progressText}>
