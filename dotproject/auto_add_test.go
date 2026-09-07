@@ -463,7 +463,10 @@ Graduated,Kubernetes,Alice Example,Acme,AliceExample
 	// Only missing-handle's foundation-csv "unmatched" row survives: its
 	// lookupPerformed=false path never consults the resolver. AliceExample's
 	// matched foundation row and both dot-project rows hit the failing
-	// resolver and are skipped rather than blanking stored evidence.
+	// resolver and are skipped rather than blanking stored evidence - and
+	// each skip must surface as an audit failure, since production loggers
+	// are no-op and a silent skip would report a fully successful run.
+	assert.Equal(t, 3, summary.AuditFailures)
 	require.Len(t, store.observed, 1)
 	assert.Equal(t, FoundationCSVSource, store.observed[0].Source)
 	assert.Equal(t, "unmatched", store.observed[0].MatchStatus)

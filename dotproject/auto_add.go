@@ -331,12 +331,14 @@ func (a *AutoMaintainerAdder) writeFoundationObservation(ctx context.Context, pr
 		if resolveErr != nil {
 			// The upsert overwrites every provenance column, so writing the
 			// empty result of a failed lookup would blank evidence a healthy
-			// run already recorded. Skip the write; the row refreshes on the
-			// next successful run.
+			// run already recorded. Skip the write and return the error so the
+			// caller counts an audit failure - production loggers are no-op,
+			// so a nil return would hide the skip entirely. The row refreshes
+			// on the next successful run.
 			if a.Logger != nil {
 				a.Logger.Warnw("keeping previously recorded foundation-csv observation after provenance failure", "error", resolveErr, "github", github, "project_id", projectID)
 			}
-			return nil
+			return resolveErr
 		}
 	}
 	confidence := provenance.Confidence(provenance.SourceFoundationCSV, reviewState, lookupPerformed)
@@ -429,12 +431,14 @@ func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, pr
 	if resolveErr != nil {
 		// The upsert overwrites every provenance column, so writing the empty
 		// result of a failed lookup would blank evidence a healthy run already
-		// recorded. Skip the write; the row refreshes on the next successful
-		// run.
+		// recorded. Skip the write and return the error so the caller counts
+		// an audit failure - production loggers are no-op, so a nil return
+		// would hide the skip entirely. The row refreshes on the next
+		// successful run.
 		if a.Logger != nil {
 			a.Logger.Warnw("keeping previously recorded dot-project observation after provenance failure", "error", resolveErr, "github", github, "project_id", project.ID)
 		}
-		return nil
+		return resolveErr
 	}
 	confidence := provenance.Confidence(provenance.SourceDotProject, reviewState, true)
 
