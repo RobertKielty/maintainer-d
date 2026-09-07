@@ -2,10 +2,16 @@ package dotproject
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"maintainerd/model"
+	"maintainerd/provenance"
+
+	"github.com/google/go-github/v55/github"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -400,4 +406,66 @@ func TestFoundationCSVPathFollowsConfiguredSource(t *testing.T) {
 	assert.Equal(t, "project-maintainers.csv", unparseable.foundationCSVPath())
 
 	assert.Equal(t, "project-maintainers.csv", (&AutoMaintainerAdder{}).foundationCSVPath())
+}
+
+// A provenance lookup that errors (transient API failure, expired run
+// context) must not produce an observation write at all: the store upsert
+// overwrites every provenance column, so persisting the empty result would
+// blank evidence a previous healthy run recorded. Legitimately absent
+// provenance (no resolver, no line) still writes - that path is covered by
+// TestAutoMaintainerAdderDryRunWritesObservationsButNoMaintainers.
+func TestAutoMaintainerAdderSkipsObservationWriteWhenProvenanceResolveFails(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"boom"}`, http.StatusBadGateway)
+	}))
+	defer server.Close()
+	client := github.NewClient(nil)
+	baseURL, err := url.Parse(server.URL + "/")
+	require.NoError(t, err)
+	client.BaseURL = baseURL
+
+	index, err := ParseFoundationMaintainersCSV(strings.NewReader(`,Project,Maintainer Name,Company,Github Name
+Graduated,Kubernetes,Alice Example,Acme,AliceExample
+`))
+	require.NoError(t, err)
+	index.SourceURL = "https://github.com/cncf/foundation/blob/abc/project-maintainers.csv"
+	index.CommitSHA = "abc"
+
+	store := newFakeAutoAddStore()
+	adder := &AutoMaintainerAdder{
+		Store:              store,
+		Foundation:         index,
+		CheckFoundationCSV: true,
+		AutoAddMaintainers: false,
+		Provenance:         provenance.NewResolver(client),
+	}
+
+	summary, err := adder.ProcessProject(context.Background(), model.Project{Model: gorm.Model{ID: 1}, Name: "Kubernetes"}, &DiscoveryResult{
+		MaintainersFile: FileDiscovery{
+			Exists:    true,
+			Path:      ".project/maintainers.yaml",
+			BlobURL:   "https://github.com/example-org/kubernetes/blob/main/.project/maintainers.yaml",
+			CommitSHA: "def456",
+			Body: `maintainers:
+  - teams:
+      - name: project-maintainers
+        members:
+          - AliceExample
+          - missing-handle
+`,
+		},
+	})
+	require.NoError(t, err, "a failed provenance lookup is not a project error")
+	assert.Equal(t, 2, summary.Candidates)
+
+	// Only missing-handle's foundation-csv "unmatched" row survives: its
+	// lookupPerformed=false path never consults the resolver. AliceExample's
+	// matched foundation row and both dot-project rows hit the failing
+	// resolver and are skipped rather than blanking stored evidence.
+	require.Len(t, store.observed, 1)
+	assert.Equal(t, FoundationCSVSource, store.observed[0].Source)
+	assert.Equal(t, "unmatched", store.observed[0].MatchStatus)
+	assert.Equal(t, "github:missing-handle", store.observed[0].SourceRef)
 }

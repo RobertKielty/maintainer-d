@@ -326,7 +326,18 @@ func (a *AutoMaintainerAdder) writeFoundationObservation(ctx context.Context, pr
 	var prov provenance.LineProvenance
 	reviewState := provenance.ReviewStateUnknown
 	if lookupPerformed && record.LineNumber > 0 {
-		prov, reviewState = a.resolveFoundationProvenance(ctx, record)
+		var resolveErr error
+		prov, reviewState, resolveErr = a.resolveFoundationProvenance(ctx, record)
+		if resolveErr != nil {
+			// The upsert overwrites every provenance column, so writing the
+			// empty result of a failed lookup would blank evidence a healthy
+			// run already recorded. Skip the write; the row refreshes on the
+			// next successful run.
+			if a.Logger != nil {
+				a.Logger.Warnw("keeping previously recorded foundation-csv observation after provenance failure", "error", resolveErr, "github", github, "project_id", projectID)
+			}
+			return nil
+		}
 	}
 	confidence := provenance.Confidence(provenance.SourceFoundationCSV, reviewState, lookupPerformed)
 
@@ -363,10 +374,11 @@ func (a *AutoMaintainerAdder) writeFoundationObservation(ctx context.Context, pr
 }
 
 // resolveFoundationProvenance resolves the commit/PR/review evidence behind
-// a foundation-csv line. A resolution failure (unparseable source URL, no
-// resolver configured, or an API error) reports ReviewStateUnknown rather
+// a foundation-csv line. An unresolvable source (unparseable source URL, no
+// resolver configured) reports ReviewStateUnknown with a nil error rather
 // than treating the line as unreviewed - an unresolvable source must never
-// read as negative evidence.
+// read as negative evidence. An API error is returned so the caller can skip
+// persisting the empty result.
 // foundationCSVPath reports the path of the CSV file actually consulted,
 // parsed from the index's source URL, so the stored SourceFilePath agrees
 // with SourceLineURL and the blame lookup when a non-default CSV path is
@@ -380,13 +392,13 @@ func (a *AutoMaintainerAdder) foundationCSVPath() string {
 	return "project-maintainers.csv"
 }
 
-func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, record FoundationMaintainerRecord) (provenance.LineProvenance, string) {
+func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, record FoundationMaintainerRecord) (provenance.LineProvenance, string, error) {
 	if a.Provenance == nil || a.Foundation == nil {
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
 	owner, repo, ref, path, ok := provenance.ParseGitHubBlobURL(a.Foundation.SourceURL)
 	if !ok {
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
 	if sha := strings.TrimSpace(a.Foundation.CommitSHA); sha != "" {
 		ref = sha
@@ -396,13 +408,16 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 		if a.Logger != nil {
 			a.Logger.Warnw("failed to resolve foundation-csv provenance", "error", err, "owner", owner, "repo", repo, "path", path, "line", record.LineNumber)
 		}
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		// A lookup that errored (transient API failure, expired run context)
+		// is distinct from one that legitimately found nothing: the caller
+		// must not persist its empty result over previously stored evidence.
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, err
 	}
 	reviewState := prov.ReviewState
 	if reviewState == "" {
 		reviewState = provenance.ReviewStateUnknown
 	}
-	return prov, reviewState
+	return prov, reviewState, nil
 }
 
 // writeDotProjectObservation records that github was found in the
@@ -410,7 +425,17 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 // membership there is the current gatekeeping mechanism for official CNCF
 // project maintainer status.
 func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, project model.Project, maintainerID *uint, github string, file FileDiscovery, line int, now time.Time) error {
-	prov, reviewState := a.resolveDotProjectProvenance(ctx, project, file, line)
+	prov, reviewState, resolveErr := a.resolveDotProjectProvenance(ctx, project, file, line)
+	if resolveErr != nil {
+		// The upsert overwrites every provenance column, so writing the empty
+		// result of a failed lookup would blank evidence a healthy run already
+		// recorded. Skip the write; the row refreshes on the next successful
+		// run.
+		if a.Logger != nil {
+			a.Logger.Warnw("keeping previously recorded dot-project observation after provenance failure", "error", resolveErr, "github", github, "project_id", project.ID)
+		}
+		return nil
+	}
 	confidence := provenance.Confidence(provenance.SourceDotProject, reviewState, true)
 
 	pid := project.ID
@@ -463,14 +488,15 @@ func dotProjectLineURL(file FileDiscovery, line int) string {
 
 // resolveDotProjectProvenance resolves the commit/PR/review evidence behind
 // a project-maintainers.yaml team-membership line. An unresolvable blob URL
-// or resolver error reports ReviewStateUnknown, never a negative signal.
-func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, project model.Project, file FileDiscovery, line int) (provenance.LineProvenance, string) {
+// reports ReviewStateUnknown with a nil error, never a negative signal. An
+// API error is returned so the caller can skip persisting the empty result.
+func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, project model.Project, file FileDiscovery, line int) (provenance.LineProvenance, string, error) {
 	if a.Provenance == nil || line <= 0 {
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
 	owner, repo, ref, path, ok := provenance.ParseGitHubBlobURL(file.BlobURL)
 	if !ok {
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
 	if sha := strings.TrimSpace(file.CommitSHA); sha != "" {
 		ref = sha
@@ -480,13 +506,16 @@ func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, p
 		if a.Logger != nil {
 			a.Logger.Warnw("failed to resolve dot-project provenance", "error", err, "project_id", project.ID, "owner", owner, "repo", repo, "path", path, "line", line)
 		}
-		return provenance.LineProvenance{}, provenance.ReviewStateUnknown
+		// A lookup that errored (transient API failure, expired run context)
+		// is distinct from one that legitimately found nothing: the caller
+		// must not persist its empty result over previously stored evidence.
+		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, err
 	}
 	reviewState := prov.ReviewState
 	if reviewState == "" {
 		reviewState = provenance.ReviewStateUnknown
 	}
-	return prov, reviewState
+	return prov, reviewState, nil
 }
 
 func (a *AutoMaintainerAdder) logAutoAdd(project model.Project, maintainer *model.Maintainer, record FoundationMaintainerRecord, result *DiscoveryResult, identity *LFXIdentityResult, now time.Time, mode string) error {
