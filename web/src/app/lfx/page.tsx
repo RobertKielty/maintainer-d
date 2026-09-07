@@ -88,7 +88,7 @@ export default function LFXPage() {
   const [requestsPerSecond, setRequestsPerSecond] = useState("4");
   const [lfxTimeout, setLfxTimeout] = useState("30s");
   const [syncTimeout, setSyncTimeout] = useState("1h");
-  const [maxLookups, setMaxLookups] = useState("50");
+  const [maxLookups, setMaxLookups] = useState("100");
   const [enrichAll, setEnrichAll] = useState(true);
   const [checkFoundationCsv, setCheckFoundationCsv] = useState(true);
   const [autoAddMaintainers, setAutoAddMaintainers] = useState(false);
