@@ -96,8 +96,9 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
             <div>
               <h2 className={styles.title}>LFX Profiles</h2>
               <p className={styles.subtitle}>
-                Every LFX profile record LFX has returned for this maintainer&apos;s GitHub
-                handle or email.
+                LFX profile records returned for this maintainer&apos;s GitHub handle or email.
+                Each enrichment lookup fetches at most 10 profiles, so an upstream identity with
+                more matches than that is shown truncated.
               </p>
             </div>
             <span className={styles.count}>{profiles.length}</span>
