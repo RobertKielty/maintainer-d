@@ -10,14 +10,14 @@ extends it rather than duplicating it):
 - **`model.MaintainerIdentityObservation`** (`model/main.go:196-217`) already models
   "an identity observation from a particular source": `Source`, `SourceRef`,
   `SourceUserID`, raw fields (`Name`/`Email`/`GitHubUser`/`LFID`/`CompanyName`/`CompanyRef`),
-  `MatchStatus` (matched/unmatched/ambiguous/error), `MatchReason`, `Confidence`
-  (exact/strong/weak), `RawPayload` (JSONB), `ObservedAt`. This is concept (1) in the
+  `MatchStatus` (matched/chosen/duplicate/unmatched/error), `MatchReason`, `Confidence`
+  (exact/strong/medium/weak), `RawPayload` (JSONB), `ObservedAt`. This is concept (1) in the
   prompt's "important design principles" list — **already built**, but it upserts in
   place per `(Source, MaintainerID/ProjectID, SourceUserID/SourceRef)` key, so it holds
   only the *latest* observation, not a history.
 - **`lfx/enricher.go`** already does LFX-based candidate matching (by GitHub handle or
-  email), classifies `matched/unmatched/ambiguous/error`, and assigns
-  `exact/strong/weak` confidence, writing straight into
+  email), classifies `matched/chosen/duplicate/unmatched/error`, and assigns
+  `exact/strong/medium/weak` confidence, writing straight into
   `MaintainerIdentityObservation`. It is the closest existing precedent for "candidate
   identity matching" and "OpenProfile verification" — but it is unclear whether it hits
   OpenProfile.dev specifically or a more general LFX identity search; treat this as the

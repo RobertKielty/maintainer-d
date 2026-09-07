@@ -64,7 +64,7 @@ type MaintainerIdentityObservation struct {
 
     MatchStatus  string `gorm:"size:32;index"` // matched, chosen, duplicate, unmatched, error
     MatchReason  string `gorm:"size:255"`
-    Confidence   string `gorm:"size:32"`       // exact, strong, weak
+    Confidence   string `gorm:"size:32"`       // exact, strong, medium, weak
     RawPayload    string `gorm:"type:jsonb"`
     ObservedAt    time.Time `gorm:"index"`
 }
