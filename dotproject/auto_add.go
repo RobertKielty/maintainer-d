@@ -415,10 +415,14 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 	if !ok {
 		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
+	// The blob URL's ref is the branch the CSV lives on; blame runs against
+	// the pinned snapshot SHA when one exists, but PR disambiguation needs
+	// the branch name (a PR's base can never equal a bare SHA).
+	branch := ref
 	if sha := strings.TrimSpace(a.Foundation.CommitSHA); sha != "" {
 		ref = sha
 	}
-	prov, err := a.Provenance.Resolve(ctx, owner, repo, ref, path, record.LineNumber)
+	prov, err := a.Provenance.Resolve(ctx, owner, repo, ref, branch, path, record.LineNumber)
 	if err != nil {
 		if a.Logger != nil {
 			a.Logger.Warnw("failed to resolve foundation-csv provenance", "error", err, "owner", owner, "repo", repo, "path", path, "line", record.LineNumber)
@@ -515,10 +519,15 @@ func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, p
 	if !ok {
 		return provenance.LineProvenance{}, provenance.ReviewStateUnknown, nil
 	}
+	// The blob URL's ref is the branch the maintainers file lives on; blame
+	// runs against the pinned snapshot SHA when one exists, but PR
+	// disambiguation needs the branch name (a PR's base can never equal a
+	// bare SHA).
+	branch := ref
 	if sha := strings.TrimSpace(file.CommitSHA); sha != "" {
 		ref = sha
 	}
-	prov, err := a.Provenance.Resolve(ctx, owner, repo, ref, path, line)
+	prov, err := a.Provenance.Resolve(ctx, owner, repo, ref, branch, path, line)
 	if err != nil {
 		if a.Logger != nil {
 			a.Logger.Warnw("failed to resolve dot-project provenance", "error", err, "project_id", project.ID, "owner", owner, "repo", repo, "path", path, "line", line)

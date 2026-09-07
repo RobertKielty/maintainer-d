@@ -198,7 +198,7 @@ func TestResolveCachesBlameAndPRLookups(t *testing.T) {
 	ctx := context.Background()
 
 	for _, line := range []int{2, 10, 25} {
-		prov, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "MAINTAINERS.md", line)
+		prov, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "main", "MAINTAINERS.md", line)
 		if err != nil {
 			t.Fatalf("Resolve line %d: %v", line, err)
 		}
@@ -231,7 +231,7 @@ func TestResolveUnresolvableLineReportsUnknownNotNegative(t *testing.T) {
 	// Line 1000 falls outside every blame range the fake server returns, so
 	// the commit can't be resolved - this must report "unknown", never
 	// "direct-push" or "unreviewed", since no review was actually observed.
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 1000)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 1000)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -242,12 +242,12 @@ func TestResolveUnresolvableLineReportsUnknownNotNegative(t *testing.T) {
 
 func TestResolveNilClientErrors(t *testing.T) {
 	var resolver *Resolver
-	if _, err := resolver.Resolve(context.Background(), "o", "r", "main", "f.md", 1); err == nil {
+	if _, err := resolver.Resolve(context.Background(), "o", "r", "main", "main", "f.md", 1); err == nil {
 		t.Fatal("expected error for nil resolver, got nil")
 	}
 
 	empty := NewResolver(nil)
-	if _, err := empty.Resolve(context.Background(), "o", "r", "main", "f.md", 1); err == nil {
+	if _, err := empty.Resolve(context.Background(), "o", "r", "main", "main", "f.md", 1); err == nil {
 		t.Fatal("expected error for resolver with nil client, got nil")
 	}
 }
@@ -265,7 +265,7 @@ func TestResolveIgnoresBotApprovals(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestResolveCountsHumanApprovalAlongsideBotApproval(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestResolveIgnoresApprovalWithMissingUser(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestResolveCachesFailedBlameLookups(t *testing.T) {
 	ctx := context.Background()
 
 	for _, line := range []int{2, 10, 25} {
-		if _, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "MAINTAINERS.md", line); err == nil {
+		if _, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "main", "MAINTAINERS.md", line); err == nil {
 			t.Fatalf("Resolve line %d: expected an error from the failed blame lookup", line)
 		}
 	}
@@ -350,7 +350,7 @@ func TestResolveIgnoresApprovalPredatingBlamedCommit(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestResolveCountsApprovalOnLaterHeadContainingBlamedCommit(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestResolveCountsFinalHeadApprovalOnSquashMergedPR(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestResolveCachesFailedPRLookups(t *testing.T) {
 	// Three lines share the blamed commit; a failing PR listing must be
 	// attempted once, not once per line, or an outage is amplified.
 	for _, line := range []int{2, 10, 25} {
-		if _, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "MAINTAINERS.md", line); err == nil {
+		if _, err := resolver.Resolve(ctx, "example-org", "example-repo", "main", "main", "MAINTAINERS.md", line); err == nil {
 			t.Fatalf("Resolve line %d: expected error from failed PR listing, got nil", line)
 		}
 	}
@@ -439,15 +439,68 @@ func TestResolveDisambiguatesMultipleMergedPRsByBaseRef(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "deadbeef", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if prov.PRNumber != 42 {
-		t.Errorf("PRNumber = %d, want 42 (the PR merged into the blamed ref)", prov.PRNumber)
+		t.Errorf("PRNumber = %d, want 42 (the PR merged into the blamed branch)", prov.PRNumber)
 	}
 	if prov.ReviewState != ReviewStateApproved {
 		t.Errorf("ReviewState = %q, want %q", prov.ReviewState, ReviewStateApproved)
+	}
+}
+
+func TestResolveDisambiguatesWithPinnedSHA(t *testing.T) {
+	// Production scenario: ref is a pinned snapshot SHA, branch is the target.
+	// When a commit is in multiple merged PRs, only the one merged into
+	// the specified branch can vouch for the line.
+	fake := &fakeGitHubServer{
+		prsJSON: `[
+			{"number":77,"html_url":"https://github.com/example-org/example-repo/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"develop"}},
+			{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}}
+		]`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+	// ref is a pinned SHA (abc123), branch is where the file actually lives
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "abc123", "main", "MAINTAINERS.md", 2)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42 (only the PR merged into 'main' branch vouches)", prov.PRNumber)
+	}
+	if prov.ReviewState != ReviewStateApproved {
+		t.Errorf("ReviewState = %q, want %q", prov.ReviewState, ReviewStateApproved)
+	}
+}
+
+func TestResolveReportsUnknownWhenBranchNotProvided(t *testing.T) {
+	// When multiple PRs contain a commit and no branch is given to
+	// disambiguate, the association is ambiguous and unresolvable.
+	fake := &fakeGitHubServer{
+		prsJSON: `[
+			{"number":77,"html_url":"https://github.com/example-org/example-repo/pull/77","merged_at":"2026-01-05T00:00:00Z","base":{"ref":"develop"}},
+			{"number":42,"html_url":"https://github.com/example-org/example-repo/pull/42","merged_at":"2026-01-02T03:04:05Z","base":{"ref":"main"}}
+		]`,
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	resolver := newTestResolver(t, srv)
+	// No branch provided (empty string) for disambiguation
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "abc123", "", "MAINTAINERS.md", 2)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if prov.ReviewState != ReviewStateUnknown {
+		t.Errorf("ReviewState = %q, want %q (multi-PR ambiguity without branch must report unknown)", prov.ReviewState, ReviewStateUnknown)
+	}
+	if prov.PRNumber != 0 {
+		t.Errorf("PRNumber = %d, want 0", prov.PRNumber)
 	}
 }
 
@@ -464,7 +517,7 @@ func TestResolveReportsUnknownWhenMergedPRsAreAmbiguous(t *testing.T) {
 	defer srv.Close()
 
 	resolver := newTestResolver(t, srv)
-	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2)
+	prov, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -487,7 +540,7 @@ func TestResolveErrorsWhenReviewListingFails(t *testing.T) {
 	// a nil-error "unknown": observation writers only preserve previously
 	// recorded evidence when Resolve errors, so a silent unknown would
 	// overwrite an approved row with a downgrade.
-	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2); err == nil {
+	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2); err == nil {
 		t.Fatal("expected error from failed review listing, got nil")
 	}
 }
@@ -508,7 +561,7 @@ func TestResolveErrorsWhenCompareFails(t *testing.T) {
 
 	// Same policy as a failed review listing: propagate so callers keep the
 	// previously recorded observation instead of persisting a downgrade.
-	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "MAINTAINERS.md", 2); err == nil {
+	if _, err := resolver.Resolve(context.Background(), "example-org", "example-repo", "main", "main", "MAINTAINERS.md", 2); err == nil {
 		t.Fatal("expected error from failed compare, got nil")
 	}
 }

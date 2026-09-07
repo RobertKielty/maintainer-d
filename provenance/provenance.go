@@ -61,12 +61,12 @@ type fileKey struct {
 	owner, repo, ref, path string
 }
 
-// commitKey scopes the PR cache to a repository and the blamed ref: the same
-// commit SHA exists in an upstream repo and its forks (different PRs), and
-// when several merged PRs share the commit, which one vouches for the line
-// depends on which ref was blamed.
+// commitKey scopes the PR cache to a repository and the target branch: the
+// same commit SHA exists in an upstream repo and its forks (different PRs),
+// and when several merged PRs share the commit, which one vouches for the
+// line depends on which branch the blamed file lives on.
 type commitKey struct {
-	owner, repo, ref, sha string
+	owner, repo, branch, sha string
 }
 
 type blameRange struct {
@@ -99,11 +99,15 @@ func NewResolver(client *github.Client) *Resolver {
 }
 
 // Resolve returns the provenance for the given 1-based line of path, at ref
-// (a branch or commit-ish), in owner/repo. Errors are returned only for
-// transport/API failures; an unresolvable-but-reachable source (e.g. no PR
-// associated with the commit) is reported as ReviewStateDirectPush, not an
-// error.
-func (r *Resolver) Resolve(ctx context.Context, owner, repo, ref, path string, line int) (LineProvenance, error) {
+// (a branch or commit-ish), in owner/repo. branch names the branch the file
+// lives on and is only consulted to disambiguate a commit associated with
+// several merged PRs: callers blame a pinned snapshot SHA, which can never
+// equal a PR's base branch, so the two must be supplied separately. An empty
+// branch leaves multi-PR associations unresolvable (reported as unknown).
+// Errors are returned only for transport/API failures; an
+// unresolvable-but-reachable source (e.g. no PR associated with the commit)
+// is reported as ReviewStateDirectPush, not an error.
+func (r *Resolver) Resolve(ctx context.Context, owner, repo, ref, branch, path string, line int) (LineProvenance, error) {
 	if r == nil || r.Client == nil {
 		return LineProvenance{}, fmt.Errorf("provenance resolver is not configured")
 	}
@@ -120,7 +124,7 @@ func (r *Resolver) Resolve(ctx context.Context, owner, repo, ref, path string, l
 		return LineProvenance{ReviewState: ReviewStateUnknown}, nil
 	}
 
-	info, err := r.prForCommit(ctx, owner, repo, ref, sha)
+	info, err := r.prForCommit(ctx, owner, repo, branch, sha)
 	if err != nil {
 		return LineProvenance{}, err
 	}
@@ -159,8 +163,8 @@ func (r *Resolver) blame(ctx context.Context, owner, repo, ref, path string) ([]
 	return ranges, err
 }
 
-func (r *Resolver) prForCommit(ctx context.Context, owner, repo, ref, sha string) (prInfo, error) {
-	key := commitKey{owner: owner, repo: repo, ref: ref, sha: sha}
+func (r *Resolver) prForCommit(ctx context.Context, owner, repo, branch, sha string) (prInfo, error) {
+	key := commitKey{owner: owner, repo: repo, branch: branch, sha: sha}
 
 	r.mu.Lock()
 	if cached, ok := r.prByCK[key]; ok {
@@ -169,7 +173,7 @@ func (r *Resolver) prForCommit(ctx context.Context, owner, repo, ref, sha string
 	}
 	r.mu.Unlock()
 
-	info, err := r.fetchPRForCommit(ctx, owner, repo, ref, sha)
+	info, err := r.fetchPRForCommit(ctx, owner, repo, branch, sha)
 
 	r.mu.Lock()
 	r.prByCK[key] = prResult{info: info, err: err}
@@ -177,7 +181,7 @@ func (r *Resolver) prForCommit(ctx context.Context, owner, repo, ref, sha string
 	return info, err
 }
 
-func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, ref, sha string) (prInfo, error) {
+func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, branch, sha string) (prInfo, error) {
 	prs, _, err := r.Client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, nil)
 	if err != nil {
 		return prInfo{}, fmt.Errorf("list pull requests for commit: %w", err)
@@ -200,13 +204,16 @@ func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, ref, sha s
 		// contains it - a release-branch PR reusing a commit from the
 		// default branch, for example. Borrowing an approval from a PR
 		// merged into a different branch would inflate the line's evidence,
-		// so only a PR whose base is the blamed ref can vouch for it. When
-		// the base can't single one out (the ref is a bare SHA, or several
-		// PRs merged into it), the association is ambiguous and must be
-		// reported as unknown rather than guessed.
+		// so only a PR whose base is the blamed file's branch can vouch for
+		// it. The branch travels separately from the blame ref because blame
+		// runs against a pinned snapshot SHA, which never equals a base
+		// branch name. When the base can't single one out (no branch known,
+		// or several PRs merged into it), the association is ambiguous and
+		// must be reported as unknown rather than guessed.
+		branch = strings.TrimSpace(branch)
 		var matching []*github.PullRequest
 		for _, candidate := range merged {
-			if strings.EqualFold(strings.TrimSpace(candidate.GetBase().GetRef()), strings.TrimSpace(ref)) {
+			if branch != "" && strings.EqualFold(strings.TrimSpace(candidate.GetBase().GetRef()), branch) {
 				matching = append(matching, candidate)
 			}
 		}

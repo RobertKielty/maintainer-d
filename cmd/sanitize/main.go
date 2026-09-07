@@ -133,9 +133,9 @@ func sanitize(ctx context.Context, store *db.SQLStore, resolver *provenance.Reso
 		refSnapshot := refBranch
 		refSnapshotPath := refPath
 		pinAttempted := false
-		pinSnapshot := func() (string, string) {
+		pinSnapshot := func() (string, string, string) {
 			if pinAttempted || !refResolvable || resolver == nil {
-				return refSnapshot, refSnapshotPath
+				return refSnapshot, refSnapshotPath, refResolvedBranch
 			}
 			pinAttempted = true
 			segments := strings.Split(refPath, "/")
@@ -153,17 +153,17 @@ func sanitize(ctx context.Context, store *db.SQLStore, resolver *provenance.Reso
 			}
 			if err != nil {
 				log.Printf("sanitize: could not pin %s/%s@%s to a commit, falling back to the branch name: %v", refOwner, refRepo, refBranch, err)
-				return refSnapshot, refSnapshotPath
+				return refSnapshot, refSnapshotPath, refResolvedBranch
 			}
 			refResolvedBranch = branch
 			refSnapshotPath = path
 			if sha := strings.TrimSpace(b.GetCommit().GetSHA()); sha != "" {
 				refSnapshot = sha
 			}
-			return refSnapshot, refSnapshotPath
+			return refSnapshot, refSnapshotPath, refResolvedBranch
 		}
 		if !notModified && refResolvable && resolver != nil {
-			if sha, pinnedPath := pinSnapshot(); sha != refResolvedBranch {
+			if sha, pinnedPath, _ := pinSnapshot(); sha != refResolvedBranch {
 				pinnedURL := fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", refOwner, refRepo, sha, pinnedPath)
 				if pinnedBody, _, _, err := fetchMaintainerRef(ctx, client, pinnedURL, nil); err == nil && pinnedBody != "" {
 					body = pinnedBody
@@ -375,7 +375,7 @@ func namePresent(body, name string) bool {
 // the ref is a github.com blob URL - the commit, PR, and review state that
 // introduced it. An unresolvable ref (gist-hosted, no resolver configured)
 // records ReviewStateUnknown rather than being treated as unreviewed.
-func writeLegacyRefObservation(ctx context.Context, store *db.SQLStore, resolver *provenance.Resolver, p model.Project, m model.Maintainer, handle string, handleLocations map[string][]int, owner, repo string, pinRef func() (string, string), path string, refResolvable bool, reuseProvenance bool, observedAt time.Time) {
+func writeLegacyRefObservation(ctx context.Context, store *db.SQLStore, resolver *provenance.Resolver, p model.Project, m model.Maintainer, handle string, handleLocations map[string][]int, owner, repo string, pinRef func() (string, string, string), path string, refResolvable bool, reuseProvenance bool, observedAt time.Time) {
 	// handlePresent matches more spellings than the location extractor
 	// recognizes (e.g. a bare word in prose), so a match can have no known
 	// line. Record the observation anyway - the evidence that the handle is
@@ -416,11 +416,13 @@ func writeLegacyRefObservation(ctx context.Context, store *db.SQLStore, resolver
 		// path, where a row without reusable provenance still pins before
 		// persisting a permanent SourceLineURL. It also yields the file path,
 		// which pinning may have corrected when the branch name contains "/".
-		ref, pinnedPath := pinRef()
+		// The third return value is the resolved branch name, needed to
+		// disambiguate when a commit is in multiple merged PRs.
+		ref, pinnedPath, branch := pinRef()
 		path = pinnedPath
 		lineURL = fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s#L%d", owner, repo, ref, path, line)
 		if resolver != nil {
-			resolved, err := resolver.Resolve(ctx, owner, repo, ref, path, line)
+			resolved, err := resolver.Resolve(ctx, owner, repo, ref, branch, path, line)
 			if err != nil {
 				log.Printf("sanitize: provenance resolve failed for %s/%s %s#L%d: %v", owner, repo, path, line, err)
 			} else {
