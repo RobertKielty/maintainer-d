@@ -284,7 +284,7 @@ when auto-add is running in dry-run mode.
 
 Default lookup limits:
 
-- normal mode: 100 lookups per run
+- normal mode: 100 lookups per project (the counter resets for each project's `EnrichProject` call, so a full run can issue up to 100 × the number of synced projects)
 - `LFX_ENRICH_ALL_MAINTAINERS=true`: unlimited unless `LFX_MAX_LOOKUPS` is set
 
 Default request pacing:

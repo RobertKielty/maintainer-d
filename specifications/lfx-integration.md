@@ -62,7 +62,7 @@ type MaintainerIdentityObservation struct {
     CompanyName  string `gorm:"size:255"`
     CompanyRef   string `gorm:"size:128"` // LFX account ID when available
 
-    MatchStatus  string `gorm:"size:32;index"` // matched, ambiguous, unmatched, error
+    MatchStatus  string `gorm:"size:32;index"` // matched, chosen, duplicate, unmatched, error
     MatchReason  string `gorm:"size:255"`
     Confidence   string `gorm:"size:32"`       // exact, strong, weak
     RawPayload    string `gorm:"type:jsonb"`
@@ -76,7 +76,7 @@ This lets the maintainer route show a unified view:
 - observed values by source
 - differences between sources
 - source links or IDs used to support each value
-- ambiguous matches that need staff review
+- duplicate LFX profile groups (`chosen`/`duplicate` rows) that need staff review
 
 Canonical fields should not be overwritten blindly. The first implementation should only fill missing canonical fields automatically when the match is exact or strong, and record an observation otherwise.
 
@@ -227,7 +227,7 @@ Use these defaults:
 
 - cache successful LFX observations for 30 days
 - cache unmatched lookups for 7 days
-- cache ambiguous/error lookups for 1 day
+- cache error lookups for 1 day
 - cap each dot-project sync run to a configurable number of LFX lookups
 - batch by source priority: dot-project handles first, then existing maintainers with missing data, then stale observations
 - record upstream status and failures in audit metadata
