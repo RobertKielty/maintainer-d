@@ -110,3 +110,26 @@ func TestParseProjectMaintainerEntriesRejectsNonStringScalarMember(t *testing.T)
 	assert.Equal(t, ParseStatusInvalidShape, status)
 	assert.Equal(t, "project-maintainers member at line 6 is not a plain string", parseErr)
 }
+
+func TestParseProjectMaintainerEntriesResolvesAliasedMembers(t *testing.T) {
+	// A typed yaml.Unmarshal resolves aliases transparently, but node-based
+	// decoding surfaces `members: *maintainers` as an AliasNode, not a
+	// SequenceNode - a Kind check that doesn't see through the alias would
+	// wrongly report this roster as having no members.
+	entries, status, parseErr := ParseProjectMaintainerEntries(`shared: &maintainer-list
+  - alice-example
+  - bob-example
+maintainers:
+  - teams:
+      - name: project-maintainers
+        members: *maintainer-list
+`)
+	require.Equal(t, ParseStatusParsed, status, parseErr)
+
+	handles := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		handles = append(handles, entry.Handle)
+	}
+	sort.Strings(handles)
+	assert.Equal(t, []string{"alice-example", "bob-example"}, handles)
+}

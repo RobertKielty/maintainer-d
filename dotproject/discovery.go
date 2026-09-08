@@ -320,7 +320,7 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 		root = root.Content[0]
 	}
 
-	maintainersNode := mappingValue(root, "maintainers")
+	maintainersNode := resolveAlias(mappingValue(root, "maintainers"))
 	if maintainersNode == nil || maintainersNode.Kind != yaml.SequenceNode || len(maintainersNode.Content) == 0 {
 		return nil, ParseStatusInvalidShape, "maintainers must contain at least one entry"
 	}
@@ -329,11 +329,13 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 	teamFound := false
 	var otherTeamNames []string
 	for _, maintainerGroup := range maintainersNode.Content {
-		teamsNode := mappingValue(maintainerGroup, "teams")
+		maintainerGroup = resolveAlias(maintainerGroup)
+		teamsNode := resolveAlias(mappingValue(maintainerGroup, "teams"))
 		if teamsNode == nil || teamsNode.Kind != yaml.SequenceNode {
 			continue
 		}
 		for _, team := range teamsNode.Content {
+			team = resolveAlias(team)
 			nameNode := mappingValue(team, "name")
 			if nameNode == nil {
 				continue
@@ -350,11 +352,12 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 				continue
 			}
 			teamFound = true
-			membersNode := mappingValue(team, "members")
+			membersNode := resolveAlias(mappingValue(team, "members"))
 			if membersNode == nil || membersNode.Kind != yaml.SequenceNode {
 				continue
 			}
 			for _, member := range membersNode.Content {
+				member = resolveAlias(member)
 				// A non-scalar member (e.g. `- {github: alice}`) has an
 				// empty Value; skipping it silently would report a parsed
 				// roster missing that maintainer, so the whole file must be
@@ -398,13 +401,27 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 
 // mappingValue returns the value node for key in a mapping node, or nil if
 // node is not a mapping or the key is absent.
+// resolveAlias follows a YAML alias node to the node it points to. A typed
+// yaml.Unmarshal resolves aliases transparently, but node-based decoding
+// (used here to preserve line numbers) surfaces an anchored value
+// (`members: *maintainers`) as Kind == yaml.AliasNode, not the Kind of
+// whatever it references - every Kind check below must see through that or
+// a valid anchored list is misreported as empty/malformed.
+func resolveAlias(node *yaml.Node) *yaml.Node {
+	if node != nil && node.Kind == yaml.AliasNode {
+		return node.Alias
+	}
+	return node
+}
+
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	node = resolveAlias(node)
 	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
-			return node.Content[i+1]
+			return resolveAlias(node.Content[i+1])
 		}
 	}
 	return nil
