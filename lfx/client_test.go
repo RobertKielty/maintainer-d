@@ -110,7 +110,37 @@ func TestSearchUsersOmitsEmptyQueryParams(t *testing.T) {
 	assert.NotContains(t, gotQuery, "githubID", "blank/whitespace-only fields must not be sent as query params")
 	assert.NotContains(t, gotQuery, "email")
 	assert.NotContains(t, gotQuery, "username")
-	assert.NotContains(t, gotQuery, "pageSize")
+	assert.Equal(t, []string{"100"}, gotQuery["pageSize"], "an unset PageSize must default to a full page so pagination math has a real page size to work with")
+}
+
+func TestSearchUsersCollectsAllPages(t *testing.T) {
+	t.Parallel()
+
+	var gotOffsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOffsets = append(gotOffsets, r.URL.Query().Get("offset"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("offset") {
+		case "":
+			_, _ = w.Write([]byte(`{"Data":[{"ID":"sfid-1"},{"ID":"sfid-2"}],"Metadata":{"Offset":0,"PageSize":2,"TotalSize":3}}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"Data":[{"ID":"sfid-3"}],"Metadata":{"Offset":2,"PageSize":2,"TotalSize":3}}`))
+		default:
+			t.Fatalf("unexpected offset %q", r.URL.Query().Get("offset"))
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	users, err := client.SearchUsers(context.Background(), UserSearch{Username: "handle-with-11-matches", PageSize: 2})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"", "2"}, gotOffsets, "must keep requesting pages until TotalSize is covered")
+	require.Len(t, users, 3, "a strongest-match candidate on a later page must not be dropped")
+	assert.Equal(t, "sfid-1", users[0].ID)
+	assert.Equal(t, "sfid-2", users[1].ID)
+	assert.Equal(t, "sfid-3", users[2].ID)
 }
 
 func TestGetUserIdentitiesHappyPath(t *testing.T) {

@@ -429,7 +429,7 @@ const (
 
 func (e *Enricher) searchUsers(ctx context.Context, githubUser, email string) ([]User, matchedBy, error) {
 	if githubUser != "" {
-		users, err := e.Client.SearchUsers(ctx, UserSearch{GitHubID: githubUser, PageSize: 10})
+		users, err := e.Client.SearchUsers(ctx, UserSearch{GitHubID: githubUser, PageSize: 100})
 		if err != nil {
 			return nil, matchedByNone, err
 		}
@@ -438,7 +438,7 @@ func (e *Enricher) searchUsers(ctx context.Context, githubUser, email string) ([
 		}
 	}
 	if email != "" {
-		users, err := e.Client.SearchUsers(ctx, UserSearch{Email: email, PageSize: 10})
+		users, err := e.Client.SearchUsers(ctx, UserSearch{Email: email, PageSize: 100})
 		if err != nil {
 			return nil, matchedByNone, err
 		}
@@ -452,7 +452,7 @@ func (e *Enricher) searchUsers(ctx context.Context, githubUser, email string) ([
 	// coincidental string match, not a verified linkage, so confidenceFor
 	// scores it "weak" unless a confirmed github identity rescues it.
 	if githubUser != "" {
-		users, err := e.Client.SearchUsers(ctx, UserSearch{Username: githubUser, PageSize: 10})
+		users, err := e.Client.SearchUsers(ctx, UserSearch{Username: githubUser, PageSize: 100})
 		if err != nil {
 			return nil, matchedByNone, err
 		}

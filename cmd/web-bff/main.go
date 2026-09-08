@@ -5362,14 +5362,14 @@ func (r lfxIdentityResolver) ResolveMaintainerIdentity(ctx context.Context, gith
 	var err error
 	matchedByGitHubID := false
 	if githubHandle != "" {
-		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{GitHubID: githubHandle, PageSize: 10})
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{GitHubID: githubHandle, PageSize: 100})
 		if err != nil {
 			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 		}
 		matchedByGitHubID = len(users) > 0
 	}
 	if len(users) == 0 && email != "" {
-		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Email: email, PageSize: 10})
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Email: email, PageSize: 100})
 		if err != nil {
 			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 		}
@@ -5380,7 +5380,7 @@ func (r lfxIdentityResolver) ResolveMaintainerIdentity(ctx context.Context, gith
 		// Username (the openprofile.dev slug) matches the GitHub handle. A
 		// coincidental string match, not a verified linkage, so it must not
 		// inherit "strong" the way a GitHubID/email match does below.
-		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Username: githubHandle, PageSize: 10})
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Username: githubHandle, PageSize: 100})
 		if err != nil {
 			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 		}

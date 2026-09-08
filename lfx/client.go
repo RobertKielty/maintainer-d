@@ -123,34 +123,60 @@ type Identity struct {
 }
 
 func (c *Client) SearchUsers(ctx context.Context, query UserSearch) ([]User, error) {
-	values := url.Values{}
-	if query.PageSize > 0 {
-		values.Set("pageSize", fmt.Sprintf("%d", query.PageSize))
-	}
-	if githubID := strings.TrimSpace(query.GitHubID); githubID != "" {
-		values.Set("githubID", githubID)
-	}
-	if email := strings.TrimSpace(query.Email); email != "" {
-		values.Set("email", email)
-	}
-	if username := strings.TrimSpace(query.Username); username != "" {
-		values.Set("username", username)
+	pageSize := query.PageSize
+	if pageSize <= 0 {
+		pageSize = 100
 	}
 
-	var response struct {
-		Data []json.RawMessage `json:"Data"`
-	}
-	if err := c.get(ctx, "/user-service/v2/users/search", values, &response); err != nil {
-		return nil, err
-	}
-	users := make([]User, 0, len(response.Data))
-	for _, raw := range response.Data {
-		var user User
-		if err := json.Unmarshal(raw, &user); err != nil {
+	var users []User
+	offset := 0
+	for {
+		values := url.Values{}
+		values.Set("pageSize", fmt.Sprintf("%d", pageSize))
+		if offset > 0 {
+			values.Set("offset", fmt.Sprintf("%d", offset))
+		}
+		if githubID := strings.TrimSpace(query.GitHubID); githubID != "" {
+			values.Set("githubID", githubID)
+		}
+		if email := strings.TrimSpace(query.Email); email != "" {
+			values.Set("email", email)
+		}
+		if username := strings.TrimSpace(query.Username); username != "" {
+			values.Set("username", username)
+		}
+
+		var response struct {
+			Data     []json.RawMessage `json:"Data"`
+			Metadata struct {
+				Offset    int `json:"Offset"`
+				PageSize  int `json:"PageSize"`
+				TotalSize int `json:"TotalSize"`
+			} `json:"Metadata"`
+		}
+		if err := c.get(ctx, "/user-service/v2/users/search", values, &response); err != nil {
 			return nil, err
 		}
-		user.Raw = raw
-		users = append(users, user)
+		for _, raw := range response.Data {
+			var user User
+			if err := json.Unmarshal(raw, &user); err != nil {
+				return nil, err
+			}
+			user.Raw = raw
+			users = append(users, user)
+		}
+
+		offset += len(response.Data)
+		// A short page (fewer rows than requested) means there is nothing left,
+		// even if TotalSize is unset or wrong; this also guards against an
+		// infinite loop if the server ever returns zero rows for a nonzero
+		// TotalSize.
+		if len(response.Data) < pageSize || offset >= response.Metadata.TotalSize {
+			break
+		}
+	}
+	if users == nil {
+		users = []User{}
 	}
 	return users, nil
 }
