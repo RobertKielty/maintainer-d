@@ -159,6 +159,12 @@
   color: var(--md-status-danger-text);
 }
 
+.badge_linked {
+  background: var(--md-status-info-bg, var(--md-chip-bg));
+  color: var(--md-status-info-text, var(--md-chip-text));
+  margin-right: 6px;
+}
+
 .badge_type_contact {
   background: var(--md-status-success-bg);
   color: var(--md-status-success-text);

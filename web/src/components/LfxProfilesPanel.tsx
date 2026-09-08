@@ -6,6 +6,13 @@ import styles from "./LfxProfilesPanel.module.css";
 
 type LfxProfilesPanelProps = {
   observations: IdentityObservation[];
+  // The profile ID stored on the maintainer record itself. Authoritative:
+  // auto-add links a profile at creation time, but the enrichment pass skips
+  // maintainers that already have any lfx observation row, so the
+  // observations below can still say "unmatched" long after a profile was
+  // linked. The panel must render the linked profile from the record even
+  // when no observation row corroborates it.
+  lfxUserId?: string | null;
 };
 
 const statusLabel: Record<string, string> = {
@@ -14,6 +21,7 @@ const statusLabel: Record<string, string> = {
   duplicate: "Duplicate",
   error: "Error",
   unmatched: "Unmatched",
+  linked: "Linked",
 };
 
 const typeLabel: Record<string, string> = {
@@ -55,7 +63,8 @@ function TypeBadge({ userType }: { userType?: string }) {
   );
 }
 
-export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps) {
+export default function LfxProfilesPanel({ observations, lfxUserId }: LfxProfilesPanelProps) {
+  const linkedProfileId = (lfxUserId || "").trim();
   // Requiring sourceUserId keeps search-level failure rows (an "error"
   // observation with no profile behind it) from rendering as blank profiles.
   const lfxObservations = (observations || []).filter(
@@ -80,9 +89,15 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
     }
   }
   const profiles = Array.from(byProfile.values());
-  if (profiles.length === 0) {
+  // A linked profile on the maintainer record must render even when no
+  // observation row corroborates it - hiding the panel here is exactly the
+  // stale-observation bug this prop exists to fix.
+  if (profiles.length === 0 && !linkedProfileId) {
     return null;
   }
+  const linkedProfileObserved = profiles.some(
+    (profile) => (profile.sourceUserId || "").trim() === linkedProfileId
+  );
   // The multi-profile path can persist only "error" rows when every identity
   // lookup fails nonfatally, so the duplicate-profile notice must not promise
   // a "Chosen" row that does not exist.
@@ -97,12 +112,19 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
               <h2 className={styles.title}>LFX Profiles</h2>
               <p className={styles.subtitle}>
                 LFX profile records returned for this maintainer&apos;s GitHub handle or email.
-                Each enrichment lookup fetches at most 10 profiles, so an upstream identity with
-                more matches than that is shown truncated.
               </p>
             </div>
             <span className={styles.count}>{profiles.length}</span>
           </div>
+
+          {linkedProfileId && (
+            <p className={styles.notice}>
+              This maintainer record is linked to LFX profile ID{" "}
+              <span className={styles.sourceRef}>{linkedProfileId}</span>.
+              {!linkedProfileObserved &&
+                " No enrichment observation below corroborates this link yet - the linked profile was resolved when the maintainer was added, and the observations shown here have not been refreshed since."}
+            </p>
+          )}
 
           {profiles.length > 1 && (
             <p className={styles.notice}>
@@ -115,6 +137,7 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
             </p>
           )}
 
+          {profiles.length > 0 && (
           <div className={styles.tableWrap}>
             <table className={styles.table}>
               <thead>
@@ -158,6 +181,8 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
                       {formatDateTime(obs.sourceLastModifiedAt)}
                     </td>
                     <td>
+                      {(obs.sourceUserId || "").trim() === linkedProfileId &&
+                        linkedProfileId && <StatusBadge status="linked" />}
                       <StatusBadge status={obs.matchStatus} />
                       {obs.matchReason && (
                         <span className={styles.matchReason}>{obs.matchReason}</span>
@@ -168,6 +193,7 @@ export default function LfxProfilesPanel({ observations }: LfxProfilesPanelProps
               </tbody>
             </table>
           </div>
+          )}
         </div>
       </Card>
     </section>

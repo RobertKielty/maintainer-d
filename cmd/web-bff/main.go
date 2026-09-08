@@ -2214,17 +2214,23 @@ func (s *server) handleProjectMaturityUpdate(w http.ResponseWriter, r *http.Requ
 }
 
 type maintainerDetailResponse struct {
-	ID           uint                                    `json:"id"`
-	Name         string                                  `json:"name"`
-	Email        string                                  `json:"email"`
-	GitHub       string                                  `json:"github"`
-	GitHubEmail  string                                  `json:"githubEmail"`
-	Status       string                                  `json:"status"`
-	CompanyID    *uint                                   `json:"companyId,omitempty"`
-	Company      string                                  `json:"company,omitempty"`
-	Location     string                                  `json:"location,omitempty"`
-	Country      string                                  `json:"country,omitempty"`
-	Timezone     string                                  `json:"timezone,omitempty"`
+	ID          uint   `json:"id"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	GitHub      string `json:"github"`
+	GitHubEmail string `json:"githubEmail"`
+	Status      string `json:"status"`
+	CompanyID   *uint  `json:"companyId,omitempty"`
+	Company     string `json:"company,omitempty"`
+	Location    string `json:"location,omitempty"`
+	Country     string `json:"country,omitempty"`
+	Timezone    string `json:"timezone,omitempty"`
+	// LFXUserID is the profile the maintainer record itself is linked to.
+	// It is the authoritative linkage: the lfx-source identity observations
+	// can lag behind it (the enrichment pass skips maintainers that already
+	// have any lfx observation row, however stale), so the UI must not
+	// derive "has an LFX profile" from observations alone.
+	LFXUserID    string                                  `json:"lfxUserId,omitempty"`
 	Projects     []maintainerProjectResponse             `json:"projects"`
 	Services     []maintainerServiceResponse             `json:"services,omitempty"`
 	Observations []maintainerIdentityObservationResponse `json:"observations,omitempty"`
@@ -2704,6 +2710,7 @@ func (s *server) buildMaintainerDetailResponse(maintainer model.Maintainer, incl
 		GitHub:      normalizeValue(maintainer.GitHubAccount, "GITHUB_MISSING"),
 		GitHubEmail: normalizeValue(maintainer.GitHubEmail, "GITHUB_MISSING"),
 		Status:      overallStatus,
+		LFXUserID:   strings.TrimSpace(maintainer.LFXUserID),
 		Projects:    projects,
 		CreatedAt:   maintainer.CreatedAt,
 		UpdatedAt:   maintainer.UpdatedAt,

@@ -32,6 +32,7 @@ type MaintainerDetail = {
   location?: string;
   country?: string;
   timezone?: string;
+  lfxUserId?: string;
   projects: { id: number; name: string; status: string; refUrl?: string }[];
   services?: MaintainerServiceView[];
   observations?: IdentityObservation[];
@@ -59,6 +60,7 @@ const maintainerDataHasChanged = (
     current.location !== next.location ||
     current.country !== next.country ||
     current.timezone !== next.timezone ||
+    current.lfxUserId !== next.lfxUserId ||
     JSON.stringify(current.services ?? []) !== JSON.stringify(next.services ?? []) ||
     current.createdAt !== next.createdAt ||
     current.updatedAt !== next.updatedAt ||
@@ -533,8 +535,11 @@ export default function MaintainerPage() {
               services={maintainer.services}
             />
           ) : null}
-          {role === "staff" && maintainer?.observations?.length ? (
-            <LfxProfilesPanel observations={maintainer.observations} />
+          {role === "staff" && (maintainer?.observations?.length || maintainer?.lfxUserId) ? (
+            <LfxProfilesPanel
+              observations={maintainer.observations || []}
+              lfxUserId={maintainer.lfxUserId}
+            />
           ) : null}
           {role === "staff" && maintainer?.observations?.length ? (
             <MaintainerIdentityPanel observations={maintainer.observations} />
