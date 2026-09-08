@@ -139,11 +139,18 @@ func main() {
 	postCtx, cancelPost := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelPost()
 	if cfg.WriteGist {
-		gist, err := publishDotProjectGist(postCtx, client, cfg, summary.GistReportRows)
-		if err != nil {
-			log.Fatalf("dot-project gist publish failed: %v", err)
+		if summary.StoppedEarly {
+			// GistReportRows only covers the projects visited before the
+			// deadline; publishing it would replace the existing gist with a
+			// partial report that silently drops every unattempted project.
+			log.Printf("dot-project gist publish skipped: run stopped early, report is incomplete")
+		} else {
+			gist, err := publishDotProjectGist(postCtx, client, cfg, summary.GistReportRows)
+			if err != nil {
+				log.Fatalf("dot-project gist publish failed: %v", err)
+			}
+			log.Printf("dot-project gist published url=%s id=%s rows=%d", gist.GetHTMLURL(), gist.GetID(), len(summary.GistReportRows))
 		}
-		log.Printf("dot-project gist published url=%s id=%s rows=%d", gist.GetHTMLURL(), gist.GetID(), len(summary.GistReportRows))
 	}
 	for _, warning := range summary.WarningSummaries {
 		log.Printf("dot-project sync warning: %s", warning)
