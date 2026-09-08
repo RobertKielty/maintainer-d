@@ -143,6 +143,34 @@ func TestSearchUsersCollectsAllPages(t *testing.T) {
 	assert.Equal(t, "sfid-3", users[2].ID)
 }
 
+func TestSearchUsersPaginatesWhenTotalSizeIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	var gotOffsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOffsets = append(gotOffsets, r.URL.Query().Get("offset"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("offset") {
+		case "":
+			_, _ = w.Write([]byte(`{"Data":[{"ID":"sfid-1"},{"ID":"sfid-2"}]}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"Data":[{"ID":"sfid-3"}]}`))
+		default:
+			t.Fatalf("unexpected offset %q", r.URL.Query().Get("offset"))
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, HTTPClient: server.Client()}
+
+	users, err := client.SearchUsers(context.Background(), UserSearch{Username: "handle", PageSize: 2})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"", "2"}, gotOffsets, "a full first page without TotalSize must not end pagination")
+	require.Len(t, users, 3)
+	assert.Equal(t, "sfid-3", users[2].ID)
+}
+
 func TestGetUserIdentitiesHappyPath(t *testing.T) {
 	t.Parallel()
 

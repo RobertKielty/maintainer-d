@@ -171,7 +171,13 @@ func (c *Client) SearchUsers(ctx context.Context, query UserSearch) ([]User, err
 		// even if TotalSize is unset or wrong; this also guards against an
 		// infinite loop if the server ever returns zero rows for a nonzero
 		// TotalSize.
-		if len(response.Data) < pageSize || offset >= response.Metadata.TotalSize {
+		if len(response.Data) < pageSize {
+			break
+		}
+		// TotalSize == 0 with a full page means the endpoint omitted metadata,
+		// not that the result set is empty — keep paginating until a short
+		// page ends it.
+		if total := response.Metadata.TotalSize; total > 0 && offset >= total {
 			break
 		}
 	}
