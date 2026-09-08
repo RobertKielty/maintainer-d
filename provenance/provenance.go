@@ -182,9 +182,22 @@ func (r *Resolver) prForCommit(ctx context.Context, owner, repo, branch, sha str
 }
 
 func (r *Resolver) fetchPRForCommit(ctx context.Context, owner, repo, branch, sha string) (prInfo, error) {
-	prs, _, err := r.Client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, nil)
-	if err != nil {
-		return prInfo{}, fmt.Errorf("list pull requests for commit: %w", err)
+	// The PR merged into the blamed branch can sit on any page; stopping at
+	// the first page would misreport it as unassociated (direct-push) or
+	// ambiguous (unknown) whenever a commit has enough associated PRs
+	// (backports, cherry-picks onto release branches) to spill past one page.
+	var prs []*github.PullRequest
+	prOpts := &github.ListOptions{PerPage: 100}
+	for {
+		page, resp, err := r.Client.PullRequests.ListPullRequestsWithCommit(ctx, owner, repo, sha, prOpts)
+		if err != nil {
+			return prInfo{}, fmt.Errorf("list pull requests for commit: %w", err)
+		}
+		prs = append(prs, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		prOpts.Page = resp.NextPage
 	}
 	// Only a merged PR can have introduced the commit to the blamed branch;
 	// a commit pushed directly can still be *associated* with an open or
