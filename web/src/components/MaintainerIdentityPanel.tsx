@@ -17,6 +17,18 @@ export type IdentityObservation = {
   confidence?: string;
   projectId?: number;
   observedAt: string;
+  sourceUserId?: string;
+  sourceUserType?: string;
+  sourceGithubId?: string;
+  sourceLastModifiedAt?: string;
+  identityCount?: number;
+  sourceFilePath?: string;
+  sourceLine?: number;
+  sourceCommitSha?: string;
+  sourceLineUrl?: string;
+  sourcePrNumber?: number;
+  sourcePrUrl?: string;
+  sourceReviewState?: string;
 };
 
 type MaintainerIdentityPanelProps = {
@@ -28,18 +40,32 @@ const matchStatusLabel: Record<string, string> = {
   unmatched: "Unmatched",
   candidate: "Candidate",
   conflict: "Conflict",
+  chosen: "Chosen",
+  duplicate: "Duplicate",
+  error: "Error",
 };
 
 const confidenceLabel: Record<string, string> = {
   exact: "Exact",
+  strong: "Strong",
   high: "High",
   medium: "Medium",
+  weak: "Weak",
   low: "Low",
 };
 
 const sourceLabel: Record<string, string> = {
   lfx: "LFX",
-  foundation_csv: "Foundation CSV",
+  "foundation-csv": "Foundation CSV",
+  "dot-project": ".project maintainers",
+  "legacy-ref": "Legacy ref",
+};
+
+const reviewStateLabel: Record<string, string> = {
+  approved: "PR approved",
+  unreviewed: "PR unreviewed",
+  "direct-push": "Direct push",
+  unknown: "Review unknown",
 };
 
 function formatDateTime(value?: string | null) {
@@ -115,6 +141,41 @@ export default function MaintainerIdentityPanel({
                       </span>
                       {obs.sourceRef && (
                         <span className={styles.sourceRef}>{obs.sourceRef}</span>
+                      )}
+                      {obs.sourceLineUrl && obs.sourceFilePath && (
+                        <a
+                          className={styles.sourceLineLink}
+                          href={obs.sourceLineUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {obs.sourceFilePath}
+                          {obs.sourceLine ? `#L${obs.sourceLine}` : ""}
+                        </a>
+                      )}
+                      {(obs.sourcePrUrl || obs.sourceReviewState) && (
+                        <span className={styles.provenanceCell}>
+                          {obs.sourcePrUrl && (
+                            <a
+                              className={styles.prLink}
+                              href={obs.sourcePrUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              PR #{obs.sourcePrNumber}
+                            </a>
+                          )}
+                          {obs.sourceReviewState && (
+                            <span
+                              className={`${styles.badge} ${
+                                styles[`badge_review_${obs.sourceReviewState}`] ||
+                                styles.badge_default
+                              }`}
+                            >
+                              {reviewStateLabel[obs.sourceReviewState] || obs.sourceReviewState}
+                            </span>
+                          )}
+                        </span>
                       )}
                       {obs.projectId != null && (
                         <Link

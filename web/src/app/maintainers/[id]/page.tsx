@@ -15,6 +15,7 @@ import MaintainerServicesPanel, {
 import MaintainerIdentityPanel, {
   IdentityObservation,
 } from "@/components/MaintainerIdentityPanel";
+import LfxProfilesPanel from "@/components/LfxProfilesPanel";
 import CompanyCreateModal from "@/components/CompanyCreateModal";
 import { getAuthBaseUrl, redirectToAuthLogin } from "@/utils/auth";
 import styles from "./page.module.css";
@@ -31,6 +32,7 @@ type MaintainerDetail = {
   location?: string;
   country?: string;
   timezone?: string;
+  lfxUserId?: string;
   projects: { id: number; name: string; status: string; refUrl?: string }[];
   services?: MaintainerServiceView[];
   observations?: IdentityObservation[];
@@ -58,6 +60,7 @@ const maintainerDataHasChanged = (
     current.location !== next.location ||
     current.country !== next.country ||
     current.timezone !== next.timezone ||
+    current.lfxUserId !== next.lfxUserId ||
     JSON.stringify(current.services ?? []) !== JSON.stringify(next.services ?? []) ||
     current.createdAt !== next.createdAt ||
     current.updatedAt !== next.updatedAt ||
@@ -394,10 +397,22 @@ export default function MaintainerPage() {
     if (lfxObservations.length === 0) {
       return null;
     }
+    // The chosen row wins even without an LFID: falling back to any row
+    // that happens to carry one would let a duplicate profile drive the
+    // summary card's OpenProfile link. Enrichment retires profile rows the
+    // latest lookup no longer returns (lfx/enricher.go retireStaleProfiles),
+    // so "chosen" here is never a stale leftover from a prior, more
+    // ambiguous lookup.
     const best =
-      lfxObservations.find((observation) => observation.matchStatus === "matched" && observation.lfid) ||
-      lfxObservations.find((observation) => observation.lfid) ||
-      lfxObservations[0];
+      lfxObservations.find((observation) => observation.matchStatus === "chosen") ||
+      lfxObservations.find((observation) => observation.matchStatus === "matched") ||
+      lfxObservations.find(
+        (observation) =>
+          observation.matchStatus !== "duplicate" && observation.matchStatus !== "error"
+      );
+    if (!best) {
+      return null;
+    }
     return { lfid: best.lfid, matchStatus: best.matchStatus };
   }, [maintainer?.observations]);
 
@@ -518,6 +533,12 @@ export default function MaintainerPage() {
                 );
               }}
               services={maintainer.services}
+            />
+          ) : null}
+          {role === "staff" && (maintainer?.observations?.length || maintainer?.lfxUserId) ? (
+            <LfxProfilesPanel
+              observations={maintainer.observations || []}
+              lfxUserId={maintainer.lfxUserId}
             />
           ) : null}
           {role === "staff" && maintainer?.observations?.length ? (

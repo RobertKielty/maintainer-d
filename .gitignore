@@ -48,3 +48,8 @@ web/**/testdata/
 # Maintainer PII — never commit raw reports or private data-ops notes.
 reports/
 data-operations/
+
+# Downloaded LFX user-service OpenAPI spec (508K third-party artifact that
+# drifts from upstream) - see lfx/LFX-USER-API-NOTES.MD for the re-download
+# path and the findings extracted from it.
+lfx/swagger.json

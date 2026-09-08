@@ -75,9 +75,15 @@ func (s *SQLStore) GetProjectByID(projectID uint) (*model.Project, error) {
 }
 
 // ListProjects returns all projects without preloading associations.
+// ListProjects orders by dot_project_last_synced_at ascending (nulls/never-
+// synced first). dot-project-sync iterates this list under a run-level
+// deadline and stops early if it runs out of time (see Syncer.SyncAll) - a
+// stable order here would let the same tail of projects starve every run;
+// ordering by staleness means a run that stops early always skips the
+// projects it most recently refreshed.
 func (s *SQLStore) ListProjects() ([]model.Project, error) {
 	var projects []model.Project
-	err := s.db.Find(&projects).Error
+	err := s.db.Order("dot_project_last_synced_at ASC NULLS FIRST").Find(&projects).Error
 	return projects, err
 }
 
@@ -908,25 +914,43 @@ func (s *SQLStore) UpsertMaintainerIdentityObservation(observation *model.Mainta
 		observation.ObservedAt = time.Now().UTC()
 	}
 
+	matchQuery := func(maintainerClause string, maintainerArgs ...interface{}) *gorm.DB {
+		query := s.db.Where("source = ?", observation.Source).Where(maintainerClause, maintainerArgs...)
+		if observation.ProjectID == nil {
+			query = query.Where("project_id IS NULL")
+		} else {
+			query = query.Where("project_id = ?", *observation.ProjectID)
+		}
+		if observation.SourceUserID != "" {
+			query = query.Where("source_user_id = ?", observation.SourceUserID)
+		} else {
+			query = query.Where("source_user_id = '' AND source_ref = ?", observation.SourceRef)
+		}
+		return query
+	}
+
 	var existing model.MaintainerIdentityObservation
-	query := s.db.Where("source = ?", observation.Source)
 	if observation.MaintainerID == nil {
-		query = query.Where("maintainer_id IS NULL")
+		if err := matchQuery("maintainer_id IS NULL").Find(&existing).Error; err != nil {
+			return nil, err
+		}
 	} else {
-		query = query.Where("maintainer_id = ?", *observation.MaintainerID)
-	}
-	if observation.ProjectID == nil {
-		query = query.Where("project_id IS NULL")
-	} else {
-		query = query.Where("project_id = ?", *observation.ProjectID)
-	}
-	if observation.SourceUserID != "" {
-		query = query.Where("source_user_id = ?", observation.SourceUserID)
-	} else {
-		query = query.Where("source_user_id = '' AND source_ref = ?", observation.SourceRef)
-	}
-	if err := query.Find(&existing).Error; err != nil {
-		return nil, err
+		if err := matchQuery("maintainer_id = ?", *observation.MaintainerID).Find(&existing).Error; err != nil {
+			return nil, err
+		}
+		if existing.ID == 0 {
+			// Adopt a row written before the maintainer existed (the
+			// observation is recorded earlier in the sync loop than the
+			// maintainer is created), instead of leaving it orphaned with a
+			// NULL maintainer_id and inserting a duplicate. Constrained to
+			// the same source_ref so that two handles sharing one LFX
+			// profile in the same project cannot adopt each other's rows.
+			if err := matchQuery("maintainer_id IS NULL").
+				Where("source_ref = ?", observation.SourceRef).
+				Find(&existing).Error; err != nil {
+				return nil, err
+			}
+		}
 	}
 	if existing.ID == 0 {
 		if err := s.db.Create(observation).Error; err != nil {
@@ -935,6 +959,7 @@ func (s *SQLStore) UpsertMaintainerIdentityObservation(observation *model.Mainta
 		return observation, nil
 	}
 
+	existing.MaintainerID = observation.MaintainerID
 	existing.SourceRef = observation.SourceRef
 	existing.SourceUserID = observation.SourceUserID
 	existing.Name = observation.Name
@@ -948,10 +973,73 @@ func (s *SQLStore) UpsertMaintainerIdentityObservation(observation *model.Mainta
 	existing.Confidence = observation.Confidence
 	existing.RawPayload = observation.RawPayload
 	existing.ObservedAt = observation.ObservedAt
+	existing.SourceUserType = observation.SourceUserType
+	existing.SourceGitHubID = observation.SourceGitHubID
+	existing.SourceLastModifiedAt = observation.SourceLastModifiedAt
+	existing.IdentityCount = observation.IdentityCount
+	existing.SourceFilePath = observation.SourceFilePath
+	existing.SourceLine = observation.SourceLine
+	existing.SourceCommitSHA = observation.SourceCommitSHA
+	existing.SourceLineURL = observation.SourceLineURL
+	existing.SourcePRNumber = observation.SourcePRNumber
+	existing.SourcePRURL = observation.SourcePRURL
+	existing.SourceReviewState = observation.SourceReviewState
 	if err := s.db.Save(&existing).Error; err != nil {
 		return nil, err
 	}
 	return &existing, nil
+}
+
+// AdoptMaintainerIdentityObservations attaches observation rows recorded
+// before a maintainer existed (maintainer_id NULL) to the maintainer that was
+// subsequently created for the same project and source ref, so the evidence
+// that justified creating the maintainer is not orphaned.
+func (s *SQLStore) AdoptMaintainerIdentityObservations(maintainerID, projectID uint, sourceRef string) (int64, error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if maintainerID == 0 {
+		return 0, fmt.Errorf("maintainer id is required")
+	}
+	if sourceRef == "" {
+		return 0, fmt.Errorf("source ref is required")
+	}
+	result := s.db.Model(&model.MaintainerIdentityObservation{}).
+		Where("maintainer_id IS NULL AND project_id = ? AND source_ref = ?", projectID, sourceRef).
+		Update("maintainer_id", maintainerID)
+	return result.RowsAffected, result.Error
+}
+
+// RetireStaleMaintainerIdentityObservations deletes source_user_id-keyed
+// rows for one candidate (source, project, sourceRef) that are absent from
+// the latest lookup and older than observedBefore. An enrichment upsert only
+// ever touches the profiles a given search actually returned, so a profile
+// that used to match and no longer does (LFX resolved a duplicate, a
+// maintainer's identity changed) would otherwise linger forever, inflating
+// the profile count and keeping a stale "chosen"/"duplicate" badge alive.
+// keepSourceUserIDs lists the profiles the current lookup did return; pass
+// an empty slice to retire every previously recorded profile for this
+// candidate (the current lookup found none). Rows with no SourceUserID
+// (unmatched/no-handle observations) are never touched - they aren't part
+// of the profile set this retires.
+func (s *SQLStore) RetireStaleMaintainerIdentityObservations(source string, projectID *uint, sourceRef string, keepSourceUserIDs []string, observedBefore time.Time) (int64, error) {
+	source = strings.TrimSpace(source)
+	sourceRef = strings.TrimSpace(sourceRef)
+	if source == "" {
+		return 0, fmt.Errorf("maintainer identity observation source is required")
+	}
+	if sourceRef == "" {
+		return 0, fmt.Errorf("source ref is required")
+	}
+	query := s.db.Where("source = ? AND source_ref = ? AND source_user_id != '' AND observed_at < ?", source, sourceRef, observedBefore)
+	if projectID == nil {
+		query = query.Where("project_id IS NULL")
+	} else {
+		query = query.Where("project_id = ?", *projectID)
+	}
+	if len(keepSourceUserIDs) > 0 {
+		query = query.Where("source_user_id NOT IN ?", keepSourceUserIDs)
+	}
+	result := query.Delete(&model.MaintainerIdentityObservation{})
+	return result.RowsAffected, result.Error
 }
 
 func (s *SQLStore) GetLatestMaintainerIdentityObservation(source string, maintainerID uint) (*model.MaintainerIdentityObservation, error) {

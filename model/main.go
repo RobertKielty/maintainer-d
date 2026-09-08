@@ -222,7 +222,13 @@ type MaintainerIdentityObservation struct {
 	MaintainerID *uint `gorm:"index"`
 	ProjectID    *uint `gorm:"index"`
 
-	Source       string `gorm:"size:64;index"`
+	Source string `gorm:"size:64;index"`
+	// SourceRef is the stable identity key an observation is upserted on
+	// (db.UpsertMaintainerIdentityObservation falls back to matching on
+	// source_ref whenever SourceUserID is empty - e.g. "github:<handle>" for
+	// foundation-csv). It must never encode a location such as a line number:
+	// doing so would mint a new row every time the underlying file reorders.
+	// Use the SourceLine/SourceLineURL fields below for location instead.
 	SourceRef    string `gorm:"size:512;index"`
 	SourceUserID string `gorm:"size:128;index"`
 
@@ -232,6 +238,32 @@ type MaintainerIdentityObservation struct {
 	LFID        string `gorm:"size:100"`
 	CompanyName string `gorm:"size:255"`
 	CompanyRef  string `gorm:"size:128"`
+
+	// SourceUserType, SourceGitHubID, SourceLastModifiedAt, and IdentityCount
+	// let a maintainer's route present every LFX profile bound to their GitHub
+	// handle side by side, since LFX has no 1:1 mapping between profile IDs
+	// and GitHub identities (see lfx/LFX-USER-API-NOTES.MD finding 8).
+	SourceUserType       string     `gorm:"size:32;index"` // lead | contact
+	SourceGitHubID       string     `gorm:"size:100"`
+	SourceLastModifiedAt *time.Time `gorm:"index"`
+	// IdentityCount is a pointer so rows recorded before the column existed
+	// stay NULL (never measured) instead of scanning as a measured zero -
+	// zero linked identities is itself a signal in the UI.
+	IdentityCount *int
+
+	// SourceFilePath, SourceLine, SourceCommitSHA, and SourceLineURL let an
+	// investigator navigate from an observation to the exact reviewed line
+	// that produced it. SourcePRNumber/SourcePRURL/SourceReviewState record
+	// whether a human gatekeeper reviewed that line before it was accepted -
+	// the actual evidentiary signal behind a file-based match, as opposed to
+	// mere presence in the file (see provenance package).
+	SourceFilePath    string `gorm:"size:512"`
+	SourceLine        int
+	SourceCommitSHA   string `gorm:"size:64"`
+	SourceLineURL     string `gorm:"size:1024"`
+	SourcePRNumber    int
+	SourcePRURL       string `gorm:"size:512"`
+	SourceReviewState string `gorm:"size:32;index"` // approved | unreviewed | direct-push | unknown
 
 	MatchStatus string    `gorm:"size:32;index"`
 	MatchReason string    `gorm:"size:255"`

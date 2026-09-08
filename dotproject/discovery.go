@@ -40,6 +40,10 @@ type RepositoryClient interface {
 	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
 	GetFile(ctx context.Context, owner, repo, ref, path string) (*FetchedFile, error)
 	ListFiles(ctx context.Context, owner, repo, ref, path string) ([]ListedFile, error)
+	// GetCommitSHA resolves ref (a branch name) to the commit SHA it points
+	// at, so a permalink built from a file fetched at ref can be pinned to
+	// a specific commit rather than drifting with the branch.
+	GetCommitSHA(ctx context.Context, owner, repo, ref string) (string, error)
 }
 
 type FetchedFile struct {
@@ -62,6 +66,10 @@ type FileDiscovery struct {
 	ETag     string
 	BodyHash string
 	Body     string
+	// CommitSHA is the commit the default branch pointed at when this file
+	// was fetched - the file's blob SHA is not usable here, since a
+	// permalink needs the commit, not the blob hash.
+	CommitSHA string
 }
 
 type DiscoveryResult struct {
@@ -121,7 +129,21 @@ func (d *Discoverer) Discover(ctx context.Context, project model.Project) (*Disc
 	result.RepoExists = true
 	result.DefaultBranch = defaultBranch
 
-	projectFile, err := d.fetchOptionalFile(ctx, org, defaultBranch, "project.yaml")
+	commitSHA, err := d.Client.GetCommitSHA(ctx, org, DefaultRepoName, defaultBranch)
+	if err != nil && !errors.Is(err, ErrDotProjectRepoNotFound) {
+		return nil, fmt.Errorf("get commit sha for %s/%s@%s: %w", org, DefaultRepoName, defaultBranch, err)
+	}
+
+	// Every read below must come from the one commit the whole discovery is
+	// attributed to: fetching at the moving branch name instead would let a
+	// push between calls hand back bodies and line numbers from a different
+	// commit than the recorded CommitSHA and provenance.
+	fetchRef := defaultBranch
+	if strings.TrimSpace(commitSHA) != "" {
+		fetchRef = commitSHA
+	}
+
+	projectFile, err := d.fetchOptionalFile(ctx, org, fetchRef, "project.yaml", commitSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +153,7 @@ func (d *Discoverer) Discover(ctx context.Context, project model.Project) (*Disc
 			parseProjectYAML(result.ProjectFile)
 	}
 
-	maintainersFile, err := d.fetchMaintainersFile(ctx, org, defaultBranch)
+	maintainersFile, err := d.fetchMaintainersFile(ctx, org, fetchRef, commitSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -144,19 +166,19 @@ func (d *Discoverer) Discover(ctx context.Context, project model.Project) (*Disc
 		result.MaintainersParseError = parseErr
 	}
 
-	securityFile, err := d.fetchOptionalFile(ctx, org, defaultBranch, "SECURITY.md")
+	securityFile, err := d.fetchOptionalFile(ctx, org, fetchRef, "SECURITY.md", commitSHA)
 	if err != nil {
 		return nil, err
 	}
 	result.SecurityFile = securityFile
 
-	contributingFile, err := d.fetchOptionalFile(ctx, org, defaultBranch, "CONTRIBUTING.md")
+	contributingFile, err := d.fetchOptionalFile(ctx, org, fetchRef, "CONTRIBUTING.md", commitSHA)
 	if err != nil {
 		return nil, err
 	}
 	result.ContributingFile = contributingFile
 
-	governanceFile, err := d.fetchOptionalFile(ctx, org, defaultBranch, "GOVERNANCE.md")
+	governanceFile, err := d.fetchOptionalFile(ctx, org, fetchRef, "GOVERNANCE.md", commitSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +187,7 @@ func (d *Discoverer) Discover(ctx context.Context, project model.Project) (*Disc
 	return result, nil
 }
 
-func (d *Discoverer) fetchMaintainersFile(ctx context.Context, org, ref string) (FileDiscovery, error) {
+func (d *Discoverer) fetchMaintainersFile(ctx context.Context, org, ref, commitSHA string) (FileDiscovery, error) {
 	path, ok, err := d.findMaintainersPath(ctx, org, ref)
 	if err != nil {
 		return FileDiscovery{}, err
@@ -173,7 +195,7 @@ func (d *Discoverer) fetchMaintainersFile(ctx context.Context, org, ref string) 
 	if !ok {
 		return FileDiscovery{}, nil
 	}
-	return d.fetchOptionalFile(ctx, org, ref, path)
+	return d.fetchOptionalFile(ctx, org, ref, path, commitSHA)
 }
 
 func (d *Discoverer) findMaintainersPath(ctx context.Context, org, ref string) (string, bool, error) {
@@ -190,7 +212,7 @@ func (d *Discoverer) findMaintainersPath(ctx context.Context, org, ref string) (
 	return "", false, nil
 }
 
-func (d *Discoverer) fetchOptionalFile(ctx context.Context, org, ref, path string) (FileDiscovery, error) {
+func (d *Discoverer) fetchOptionalFile(ctx context.Context, org, ref, path, commitSHA string) (FileDiscovery, error) {
 	fetched, err := d.Client.GetFile(ctx, org, DefaultRepoName, ref, path)
 	if err != nil {
 		if errors.Is(err, ErrDotProjectFileNotFound) {
@@ -200,13 +222,14 @@ func (d *Discoverer) fetchOptionalFile(ctx context.Context, org, ref, path strin
 	}
 
 	return FileDiscovery{
-		Path:     fetched.Path,
-		Exists:   true,
-		BlobURL:  fetched.BlobURL,
-		RawURL:   fetched.RawURL,
-		ETag:     fetched.ETag,
-		BodyHash: hashBody(fetched.Body),
-		Body:     fetched.Body,
+		Path:      fetched.Path,
+		Exists:    true,
+		BlobURL:   fetched.BlobURL,
+		RawURL:    fetched.RawURL,
+		ETag:      fetched.ETag,
+		BodyHash:  hashBody(fetched.Body),
+		Body:      fetched.Body,
+		CommitSHA: commitSHA,
 	}, nil
 }
 
@@ -275,45 +298,143 @@ func ParseMaintainerHandles(body string) ([]string, ParseStatus, string) {
 	return result, ParseStatusParsed, ""
 }
 
-func ParseProjectMaintainerHandles(body string) ([]string, ParseStatus, string) {
-	raw := struct {
-		Maintainers []struct {
-			Teams []struct {
-				Name    string   `yaml:"name"`
-				Members []string `yaml:"members"`
-			} `yaml:"teams"`
-		} `yaml:"maintainers"`
-	}{}
+// MaintainerEntry is a single project-maintainers team member together with
+// the 1-based line it appears on in the source YAML, so a caller can build
+// a commit-pinned permalink to the exact line that granted maintainer
+// status.
+type MaintainerEntry struct {
+	Handle string
+	Line   int
+}
 
-	if err := yaml.Unmarshal([]byte(body), &raw); err != nil {
+// ParseProjectMaintainerEntries parses the project-maintainers team members
+// out of a maintainers.yaml body using yaml.Node decoding, which preserves
+// line numbers that a typed yaml.Unmarshal would discard.
+func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus, string) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(body), &doc); err != nil {
 		return nil, ParseStatusInvalidYAML, err.Error()
 	}
-	if len(raw.Maintainers) == 0 {
+	root := &doc
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+
+	maintainersNode := resolveAlias(mappingValue(root, "maintainers"))
+	if maintainersNode == nil || maintainersNode.Kind != yaml.SequenceNode || len(maintainersNode.Content) == 0 {
 		return nil, ParseStatusInvalidShape, "maintainers must contain at least one entry"
 	}
 
-	handles := make(map[string]struct{})
-	for _, maintainerGroup := range raw.Maintainers {
-		for _, team := range maintainerGroup.Teams {
-			if !strings.EqualFold(strings.TrimSpace(team.Name), "project-maintainers") {
+	seen := make(map[string]MaintainerEntry)
+	teamFound := false
+	var otherTeamNames []string
+	for _, maintainerGroup := range maintainersNode.Content {
+		maintainerGroup = resolveAlias(maintainerGroup)
+		teamsNode := resolveAlias(mappingValue(maintainerGroup, "teams"))
+		if teamsNode == nil || teamsNode.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, team := range teamsNode.Content {
+			team = resolveAlias(team)
+			nameNode := mappingValue(team, "name")
+			if nameNode == nil {
 				continue
 			}
-			for _, member := range team.Members {
-				normalized := normalizeHandle(member)
+			teamName := strings.TrimSpace(nameNode.Value)
+			if !strings.EqualFold(teamName, "project-maintainers") {
+				// Recorded only to make the exact-hyphenated-slug filter's
+				// false-negative rate measurable (see the PR-reviewed
+				// provenance plan section 6) - the match itself is
+				// deliberately left exact, not widened here.
+				if strings.Contains(strings.ToLower(teamName), "maintainer") {
+					otherTeamNames = append(otherTeamNames, teamName)
+				}
+				continue
+			}
+			teamFound = true
+			membersNode := resolveAlias(mappingValue(team, "members"))
+			if membersNode == nil || membersNode.Kind != yaml.SequenceNode {
+				continue
+			}
+			for _, member := range membersNode.Content {
+				member = resolveAlias(member)
+				// A non-scalar member (e.g. `- {github: alice}`) has an
+				// empty Value; skipping it silently would report a parsed
+				// roster missing that maintainer, so the whole file must be
+				// rejected as malformed instead. ScalarNode also covers YAML
+				// nulls, booleans, and numbers (`- null`, `- 123`), so the
+				// string tag must be checked too, or those become bogus
+				// handles instead of being rejected.
+				if member.Kind != yaml.ScalarNode || member.ShortTag() != "!!str" {
+					return nil, ParseStatusInvalidShape, fmt.Sprintf(
+						"project-maintainers member at line %d is not a plain string", member.Line)
+				}
+				normalized := normalizeHandle(member.Value)
 				if normalized == "" {
 					continue
 				}
-				handles[normalized] = struct{}{}
+				if _, exists := seen[normalized]; exists {
+					continue
+				}
+				seen[normalized] = MaintainerEntry{Handle: normalized, Line: member.Line}
 			}
 		}
 	}
-	if len(handles) == 0 {
+	if len(seen) == 0 {
+		if !teamFound {
+			if len(otherTeamNames) > 0 {
+				return nil, ParseStatusInvalidShape, fmt.Sprintf(
+					"no project-maintainers team found; saw maintainer-like team name(s) that did not match exactly: %s",
+					strings.Join(otherTeamNames, ", "))
+			}
+			return nil, ParseStatusInvalidShape, "no project-maintainers team found"
+		}
 		return nil, ParseStatusInvalidShape, "project-maintainers team has no members"
 	}
 
-	result := make([]string, 0, len(handles))
-	for handle := range handles {
-		result = append(result, handle)
+	result := make([]MaintainerEntry, 0, len(seen))
+	for _, entry := range seen {
+		result = append(result, entry)
+	}
+	return result, ParseStatusParsed, ""
+}
+
+// mappingValue returns the value node for key in a mapping node, or nil if
+// node is not a mapping or the key is absent.
+// resolveAlias follows a YAML alias node to the node it points to. A typed
+// yaml.Unmarshal resolves aliases transparently, but node-based decoding
+// (used here to preserve line numbers) surfaces an anchored value
+// (`members: *maintainers`) as Kind == yaml.AliasNode, not the Kind of
+// whatever it references - every Kind check below must see through that or
+// a valid anchored list is misreported as empty/malformed.
+func resolveAlias(node *yaml.Node) *yaml.Node {
+	if node != nil && node.Kind == yaml.AliasNode {
+		return node.Alias
+	}
+	return node
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	node = resolveAlias(node)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return resolveAlias(node.Content[i+1])
+		}
+	}
+	return nil
+}
+
+func ParseProjectMaintainerHandles(body string) ([]string, ParseStatus, string) {
+	entries, status, parseErr := ParseProjectMaintainerEntries(body)
+	if status != ParseStatusParsed {
+		return nil, status, parseErr
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.Handle)
 	}
 	return result, ParseStatusParsed, ""
 }
@@ -399,6 +520,20 @@ func (c *GitHubRepositoryClient) GetFile(ctx context.Context, owner, repo, ref, 
 		fetched.RawURL = rawRef(owner, ref, path)
 	}
 	return fetched, nil
+}
+
+func (c *GitHubRepositoryClient) GetCommitSHA(ctx context.Context, owner, repo, ref string) (string, error) {
+	if c == nil || c.Client == nil {
+		return "", errors.New("github client is required")
+	}
+	branch, resp, err := c.Client.Repositories.GetBranch(ctx, owner, repo, ref, false)
+	if err != nil {
+		if isGitHubNotFound(resp, err) {
+			return "", ErrDotProjectRepoNotFound
+		}
+		return "", err
+	}
+	return strings.TrimSpace(branch.GetCommit().GetSHA()), nil
 }
 
 func (c *GitHubRepositoryClient) ListFiles(ctx context.Context, owner, repo, ref, path string) ([]ListedFile, error) {

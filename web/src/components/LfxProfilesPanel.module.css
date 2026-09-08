@@ -20,7 +20,7 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .title {
@@ -39,10 +39,22 @@
 .count {
   padding: 6px 12px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--md-chip-bg);
+  color: var(--md-chip-text);
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.notice {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--md-card-text, #0f172a);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .tableWrap {
@@ -79,87 +91,22 @@
   color: var(--md-card-text-strong, #0b1220);
 }
 
-.sourceLabel {
+.lfidLink {
   display: block;
   font-weight: 600;
+  color: var(--md-link);
+  text-decoration: none;
+}
+
+.lfidLink:hover {
+  text-decoration: underline;
 }
 
 .sourceRef {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--md-card-muted, rgba(15, 23, 42, 0.6));
   word-break: break-all;
-}
-
-.projectLink {
-  display: block;
-  font-size: 12px;
-  color: var(--md-link);
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.projectLink:hover {
-  text-decoration: underline;
-}
-
-.sourceLineLink {
-  display: block;
-  font-size: 12px;
-  color: var(--md-link-blue);
-  text-decoration: none;
-  word-break: break-all;
-  margin-top: 2px;
-}
-
-.sourceLineLink:hover {
-  text-decoration: underline;
-}
-
-.provenanceCell {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.prLink {
-  font-size: 12px;
-  color: var(--md-link-blue);
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.prLink:hover {
-  text-decoration: underline;
-}
-
-.badge_review_approved {
-  background: var(--md-status-success-bg);
-  color: var(--md-status-success-text);
-}
-
-.badge_review_unreviewed {
-  background: var(--md-status-warning-bg);
-  color: var(--md-status-warning-text);
-}
-
-.badge_review_direct-push {
-  background: var(--md-status-danger-bg);
-  color: var(--md-status-danger-text);
-}
-
-.badge_review_unknown {
-  background: var(--md-chip-bg);
-  color: var(--md-chip-text);
-}
-
-.matchCell {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
 }
 
 .matchReason {
@@ -171,6 +118,10 @@
 
 .dateCell {
   white-space: nowrap;
+}
+
+.muted {
+  color: var(--md-card-muted, rgba(15, 23, 42, 0.5));
 }
 
 .badge {
@@ -188,27 +139,6 @@
   color: var(--md-chip-text);
 }
 
-.badge_matched {
-  background: var(--md-status-success-bg);
-  color: var(--md-status-success-text);
-}
-
-.badge_unmatched {
-  background: var(--md-status-danger-bg);
-  color: var(--md-status-danger-text);
-}
-
-.badge_candidate {
-  background: var(--md-status-warning-bg);
-  color: var(--md-status-warning-text);
-}
-
-.badge_conflict {
-  background: #7f1d1d;
-  color: #fee2e2;
-  box-shadow: inset 0 0 0 1px rgba(254, 202, 202, 0.2);
-}
-
 .badge_chosen {
   background: var(--md-status-success-bg);
   color: var(--md-status-success-text);
@@ -219,12 +149,28 @@
   color: var(--md-status-warning-text);
 }
 
+.badge_matched {
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
+}
+
 .badge_error {
   background: var(--md-status-danger-bg);
   color: var(--md-status-danger-text);
 }
 
-.badge_confidence {
+.badge_linked {
+  background: var(--md-status-info-bg, var(--md-chip-bg));
+  color: var(--md-status-info-text, var(--md-chip-text));
+  margin-right: 6px;
+}
+
+.badge_type_contact {
+  background: var(--md-status-success-bg);
+  color: var(--md-status-success-text);
+}
+
+.badge_type_lead {
   background: var(--md-chip-bg);
   color: var(--md-chip-text);
 }

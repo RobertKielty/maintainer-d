@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: maintainerd-server-env
+  namespace: maintainerd
+type: Opaque
+stringData:
+  GITHUB_API_TOKEN: ${GITHUB_API_TOKEN}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+  FOSSA_API_TOKEN: ${FOSSA_API_TOKEN}
+  ORG: ${ORG}
+  REPO: ${REPO}

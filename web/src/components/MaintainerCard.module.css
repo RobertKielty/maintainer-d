@@ -531,3 +531,16 @@ a.companyPill:focus-visible .icon {
     font-size: 17px;
   }
 }
+
+[data-theme='dark'] .nameInput {
+  border-bottom-color: #6b7280;
+}
+
+[data-theme='dark'] .nameInput:focus {
+  border-bottom-color: #9ca3af;
+}
+
+[data-theme='dark'] .companySelect:focus,
+[data-theme='dark'] .contactInput:focus {
+  border-bottom-color: #9ca3af;
+}

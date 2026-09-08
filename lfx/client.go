@@ -3,8 +3,10 @@ package lfx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maintainerd/dotproject"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,11 +30,54 @@ type Client struct {
 	lastRequest time.Time
 }
 
+// HTTPStatusError is returned by Client.get for any non-2xx response, so
+// callers can classify LFX failures by status code instead of guessing from
+// error text.
+type HTTPStatusError struct {
+	StatusCode int
+	Status     string
+	Body       string
+	URL        string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("GET %s: %s: %s", e.URL, e.Status, e.Body)
+}
+
+// PlatformAccessError wraps an LFX API failure with a message matched to its
+// actual cause: an expired/invalid token (401/403) genuinely needs a token
+// refresh, but a timeout, rate limit, or 5xx does not - pointing at
+// LFX_AUTH_TOKEN in those cases is misleading and sends whoever is
+// debugging an outage to the wrong place.
 func PlatformAccessError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("LFX Platform access failed; update LFX_AUTH_TOKEN with a fresh token from %s: %w", TokenRefreshURL, err)
+	var httpErr *HTTPStatusError
+	switch {
+	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized:
+		// A dead token (401) and a rate limit (429) are marked fatal to a
+		// sync run: every remaining project would hit the same wall, so
+		// retrying per-project just burns quota. A 403 stays an ordinary
+		// per-project error - it can be resource-specific (ACL scope), and
+		// issue #150's verified behavior is that a mid-run LFX-path 403 does
+		// not kill the run. Timeouts, 5xx and transport errors below are
+		// ordinary per-project errors too.
+		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform access failed (HTTP 401, invalid or expired token); update LFX_AUTH_TOKEN with a fresh token from %s: %w", TokenRefreshURL, err)}
+	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden:
+		return fmt.Errorf("LFX Platform denied this request (HTTP 403); the token may lack access to this resource (X-ACL scope) or be expired - check LFX_AUTH_TOKEN and LFX_ACL, refresh at %s: %w", TokenRefreshURL, err)
+	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests:
+		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform rate limited this request (HTTP 429); not a token problem, back off LFX_REQUEST_DELAY: %w", err)}
+	case errors.As(err, &httpErr):
+		return fmt.Errorf("LFX Platform returned HTTP %d; not necessarily a token problem: %w", httpErr.StatusCode, err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("LFX Platform request timed out (context deadline exceeded); not a token problem, this is a slow response or the run's overall time budget was exhausted: %w", err)
+	default:
+		// DNS failures, TLS errors, connection resets, and cancellations all
+		// land here; none of them are cured by a fresh token, so the token
+		// guidance stays reserved for the explicit 401/403 branch above.
+		return fmt.Errorf("LFX Platform request failed (transport error, not necessarily a token problem): %w", err)
+	}
 }
 
 func (c *Client) CheckToken(ctx context.Context) error {
@@ -52,14 +97,17 @@ type UserSearch struct {
 }
 
 type User struct {
-	ID        string          `json:"ID"`
-	FirstName string          `json:"FirstName"`
-	LastName  string          `json:"LastName"`
-	Name      string          `json:"Name"`
-	Email     string          `json:"Email"`
-	Username  string          `json:"Username"`
-	Account   json.RawMessage `json:"Account"`
-	Raw       json.RawMessage `json:"-"`
+	ID               string          `json:"ID"`
+	FirstName        string          `json:"FirstName"`
+	LastName         string          `json:"LastName"`
+	Name             string          `json:"Name"`
+	Email            string          `json:"Email"`
+	Username         string          `json:"Username"`
+	Account          json.RawMessage `json:"Account"`
+	Type             string          `json:"Type"` // "lead" | "contact" - see LFX-USER-API-NOTES.MD finding 8
+	GithubID         string          `json:"GithubID"`
+	LastModifiedDate string          `json:"LastModifiedDate"`
+	Raw              json.RawMessage `json:"-"`
 }
 
 type Identity struct {
@@ -75,34 +123,66 @@ type Identity struct {
 }
 
 func (c *Client) SearchUsers(ctx context.Context, query UserSearch) ([]User, error) {
-	values := url.Values{}
-	if query.PageSize > 0 {
-		values.Set("pageSize", fmt.Sprintf("%d", query.PageSize))
-	}
-	if githubID := strings.TrimSpace(query.GitHubID); githubID != "" {
-		values.Set("githubID", githubID)
-	}
-	if email := strings.TrimSpace(query.Email); email != "" {
-		values.Set("email", email)
-	}
-	if username := strings.TrimSpace(query.Username); username != "" {
-		values.Set("username", username)
+	pageSize := query.PageSize
+	if pageSize <= 0 {
+		pageSize = 100
 	}
 
-	var response struct {
-		Data []json.RawMessage `json:"Data"`
-	}
-	if err := c.get(ctx, "/user-service/v2/users/search", values, &response); err != nil {
-		return nil, err
-	}
-	users := make([]User, 0, len(response.Data))
-	for _, raw := range response.Data {
-		var user User
-		if err := json.Unmarshal(raw, &user); err != nil {
+	var users []User
+	offset := 0
+	for {
+		values := url.Values{}
+		values.Set("pageSize", fmt.Sprintf("%d", pageSize))
+		if offset > 0 {
+			values.Set("offset", fmt.Sprintf("%d", offset))
+		}
+		if githubID := strings.TrimSpace(query.GitHubID); githubID != "" {
+			values.Set("githubID", githubID)
+		}
+		if email := strings.TrimSpace(query.Email); email != "" {
+			values.Set("email", email)
+		}
+		if username := strings.TrimSpace(query.Username); username != "" {
+			values.Set("username", username)
+		}
+
+		var response struct {
+			Data     []json.RawMessage `json:"Data"`
+			Metadata struct {
+				Offset    int `json:"Offset"`
+				PageSize  int `json:"PageSize"`
+				TotalSize int `json:"TotalSize"`
+			} `json:"Metadata"`
+		}
+		if err := c.get(ctx, "/user-service/v2/users/search", values, &response); err != nil {
 			return nil, err
 		}
-		user.Raw = raw
-		users = append(users, user)
+		for _, raw := range response.Data {
+			var user User
+			if err := json.Unmarshal(raw, &user); err != nil {
+				return nil, err
+			}
+			user.Raw = raw
+			users = append(users, user)
+		}
+
+		offset += len(response.Data)
+		// A short page (fewer rows than requested) means there is nothing left,
+		// even if TotalSize is unset or wrong; this also guards against an
+		// infinite loop if the server ever returns zero rows for a nonzero
+		// TotalSize.
+		if len(response.Data) < pageSize {
+			break
+		}
+		// TotalSize == 0 with a full page means the endpoint omitted metadata,
+		// not that the result set is empty — keep paginating until a short
+		// page ends it.
+		if total := response.Metadata.TotalSize; total > 0 && offset >= total {
+			break
+		}
+	}
+	if users == nil {
+		users = []User{}
 	}
 	return users, nil
 }
@@ -172,7 +252,12 @@ func (c *Client) get(ctx context.Context, path string, values url.Values, target
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("GET %s: %s: %s", endpoint.String(), resp.Status, strings.TrimSpace(string(body)))
+		return &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       strings.TrimSpace(string(body)),
+			URL:        endpoint.String(),
+		}
 	}
 	if target == nil {
 		return nil

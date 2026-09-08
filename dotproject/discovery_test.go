@@ -26,6 +26,14 @@ func (f *fakeRepositoryClient) GetDefaultBranch(_ context.Context, owner, repo s
 	return branch, nil
 }
 
+func (f *fakeRepositoryClient) GetCommitSHA(_ context.Context, owner, repo, ref string) (string, error) {
+	key := owner + "/" + repo
+	if _, ok := f.defaultBranches[key]; !ok {
+		return "", ErrDotProjectRepoNotFound
+	}
+	return "deadbeef", nil
+}
+
 func (f *fakeRepositoryClient) GetFile(_ context.Context, owner, repo, ref, path string) (*FetchedFile, error) {
 	key := fmt.Sprintf("%s/%s@%s:%s", owner, repo, ref, path)
 	file, ok := f.files[key]
@@ -86,11 +94,11 @@ func TestDiscoverLowercaseMaintainersFileAndDeduplicatesHandles(t *testing.T) {
 			"example-org/.project": "main",
 		},
 		files: map[string]*FetchedFile{
-			"example-org/.project@main:project.yaml": {
+			"example-org/.project@deadbeef:project.yaml": {
 				Path: "project.yaml",
 				Body: "schema_version: \"1.0.0\"\nname: Example\n",
 			},
-			"example-org/.project@main:maintainers.yaml": {
+			"example-org/.project@deadbeef:maintainers.yaml": {
 				Path: "maintainers.yaml",
 				Body: `maintainers:
   - teams:
@@ -104,7 +112,7 @@ func TestDiscoverLowercaseMaintainersFileAndDeduplicatesHandles(t *testing.T) {
           - CAROL
 `,
 			},
-			"example-org/.project@main:SECURITY.md": {
+			"example-org/.project@deadbeef:SECURITY.md": {
 				Path: "SECURITY.md",
 				Body: "# Security\n",
 			},
@@ -140,11 +148,11 @@ func TestDiscoverUnsupportedSchemaVersion(t *testing.T) {
 			"example-org/.project": "main",
 		},
 		files: map[string]*FetchedFile{
-			"example-org/.project@main:project.yaml": {
+			"example-org/.project@deadbeef:project.yaml": {
 				Path: "project.yaml",
 				Body: "schema_version: \"2.0.0\"\nname: Example\n",
 			},
-			"example-org/.project@main:MAINTAINERS.yaml": {
+			"example-org/.project@deadbeef:MAINTAINERS.yaml": {
 				Path: "MAINTAINERS.yaml",
 				Body: `maintainers:
   - teams:
@@ -178,11 +186,11 @@ func TestDiscoverMixedCaseMaintainersFile(t *testing.T) {
 			"example-org/.project": "main",
 		},
 		files: map[string]*FetchedFile{
-			"example-org/.project@main:project.yaml": {
+			"example-org/.project@deadbeef:project.yaml": {
 				Path: "project.yaml",
 				Body: "schema_version: \"1.0.0\"\nname: Example\n",
 			},
-			"example-org/.project@main:Maintainers.YAML": {
+			"example-org/.project@deadbeef:Maintainers.YAML": {
 				Path: "Maintainers.YAML",
 				Body: `maintainers:
   - teams:

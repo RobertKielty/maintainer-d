@@ -223,6 +223,57 @@ func TestMaintainerEmailRedaction(t *testing.T) {
 	})
 }
 
+func TestMaintainerDetailSurfacesLinkedLFXProfile(t *testing.T) {
+	dbConn := setupPostgresTestDB(t)
+	store := db.NewSQLStore(dbConn)
+	now := time.Now()
+
+	project := model.Project{Name: "LFX Linked Project", Maturity: model.Sandbox}
+	require.NoError(t, dbConn.Create(&project).Error)
+
+	// The maintainer record carries the linked profile even though no lfx
+	// identity observation corroborates it - the observation rows can stay
+	// stale-unmatched indefinitely (enrichment skips maintainers that already
+	// have any lfx row), so the response must expose the record's own link.
+	maintainer := model.Maintainer{
+		Name:             "Carol Example",
+		Email:            "carol@example.org",
+		GitHubAccount:    "carol-example",
+		MaintainerStatus: model.ActiveMaintainer,
+		LFXUserID:        "  lf-carol-profile-id  ",
+	}
+	require.NoError(t, dbConn.Create(&maintainer).Error)
+	require.NoError(t, dbConn.Model(&project).Association("Maintainers").Append(&maintainer))
+
+	staff := model.StaffMember{
+		Name:          "Staff Tester",
+		GitHubAccount: "staff-tester",
+		Email:         "staff@example.org",
+	}
+	require.NoError(t, dbConn.Create(&staff).Error)
+
+	s := &server{
+		store:      store,
+		sessions:   newSessionStore(log.New(io.Discard, "", 0)),
+		cookieName: defaultSessionCookieName,
+		logger:     log.New(io.Discard, "", 0),
+	}
+	staffSessionID := "staff-session"
+	s.sessions.Set(session{
+		ID:        staffSessionID,
+		Login:     staff.GitHubAccount,
+		Role:      roleStaff,
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	})
+
+	rec := performMaintainerGet(t, s, maintainer.ID, staffSessionID)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var response maintainerDetailResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&response))
+	assert.Equal(t, "lf-carol-profile-id", response.LFXUserID)
+}
+
 func TestMaintainerCanAccessAllProjectsAndMaintainers(t *testing.T) {
 	dbConn := setupPostgresTestDB(t)
 	store := db.NewSQLStore(dbConn)

@@ -31,6 +31,11 @@ type LFXRun = {
   total: number;
   processed: number;
   current?: string;
+  totalProjects: number;
+  projectsProcessed: number;
+  currentProject?: string;
+  stoppedEarly?: boolean;
+  remainingProjects?: number;
   attempted: number;
   matched: number;
   ambiguous: number;
@@ -69,6 +74,11 @@ const progressPercent = (run: LFXRun) => {
   return Math.min(100, Math.round((run.processed / run.total) * 100));
 };
 
+const projectProgressPercent = (run: LFXRun) => {
+  if (run.totalProjects <= 0) return 0;
+  return Math.min(100, Math.round((run.projectsProcessed / run.totalProjects) * 100));
+};
+
 export default function LFXPage() {
   const [access, setAccess] = useState<AccessResponse | null>(null);
   const [runs, setRuns] = useState<LFXRun[]>([]);
@@ -78,7 +88,7 @@ export default function LFXPage() {
   const [requestsPerSecond, setRequestsPerSecond] = useState("4");
   const [lfxTimeout, setLfxTimeout] = useState("30s");
   const [syncTimeout, setSyncTimeout] = useState("1h");
-  const [maxLookups, setMaxLookups] = useState("50");
+  const [maxLookups, setMaxLookups] = useState("100");
   const [enrichAll, setEnrichAll] = useState(true);
   const [checkFoundationCsv, setCheckFoundationCsv] = useState(true);
   const [autoAddMaintainers, setAutoAddMaintainers] = useState(false);
@@ -450,7 +460,42 @@ export default function LFXPage() {
                         {statusLabel(activeRun.status)}
                       </span>
                     </div>
-                    <div className={styles.progressTrack}>
+                    {activeRun.totalProjects > 0 ? (
+                      <>
+                        <div
+                          className={styles.progressTrack}
+                          role="progressbar"
+                          aria-label="Projects processed"
+                          aria-valuemin={0}
+                          aria-valuemax={activeRun.totalProjects}
+                          aria-valuenow={activeRun.projectsProcessed}
+                        >
+                          <div
+                            className={styles.progressFill}
+                            style={{ width: `${projectProgressPercent(activeRun)}%` }}
+                          />
+                        </div>
+                        <div className={styles.progressText}>
+                          {activeRun.projectsProcessed.toLocaleString()} / {activeRun.totalProjects.toLocaleString()} projects
+                        </div>
+                        {activeRun.currentProject ? (
+                          <div className={styles.current}>Project: {activeRun.currentProject}</div>
+                        ) : null}
+                        {activeRun.stoppedEarly ? (
+                          <div className={styles.current}>
+                            Stopped early — run time budget exhausted; {(activeRun.remainingProjects ?? 0).toLocaleString()} project(s) not attempted
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
+                    <div
+                      className={styles.progressTrack}
+                      role="progressbar"
+                      aria-label="Candidates processed"
+                      aria-valuemin={0}
+                      aria-valuemax={activeRun.total}
+                      aria-valuenow={activeRun.processed}
+                    >
                       <div className={styles.progressFill} style={{ width: `${progressPercent(activeRun)}%` }} />
                     </div>
                     <div className={styles.progressText}>
@@ -526,7 +571,7 @@ export default function LFXPage() {
                             #{run.id}
                           </button>
                         </td>
-                        <td>{statusLabel(run.status)}</td>
+                        <td>{statusLabel(run.status)}{run.stoppedEarly ? " (partial)" : ""}</td>
                         <td>{run.requestedBy}</td>
                         <td>{run.processed.toLocaleString()} / {run.total.toLocaleString()}</td>
                         <td>{run.matched.toLocaleString()}</td>

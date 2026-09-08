@@ -125,6 +125,11 @@
   outline: none;
 }
 
+[data-theme='dark'] .field input:focus {
+  border-color: #9ca3af;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.25);
+}
+
 .checkboxField {
   align-items: center;
   color: var(--md-card-text, #0f172a);

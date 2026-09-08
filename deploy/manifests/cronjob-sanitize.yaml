@@ -9,7 +9,10 @@ spec:
   startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
-  suspend: false
+  # Suspended 2026-09-04: sanitize reconciles against legacy maintainer ref
+  # files, which fight dot-project-sync on projects that have adopted
+  # .project. Keep suspended until the legacy-ref retirement lands.
+  suspend: true
   jobTemplate:
     spec:
       ttlSecondsAfterFinished: 3600
@@ -36,5 +39,14 @@ spec:
             envFrom:
             - secretRef:
                 name: maintainerd-db-env
+            # The provenance resolver (blame/PR/review lookups behind
+            # legacy-ref observations) is optional in code but dead without a
+            # GitHub credential; source it from the shared server secret.
+            env:
+            - name: GITHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: maintainerd-server-env
+                  key: GITHUB_API_TOKEN
             resources: {}
             terminationMessagePolicy: File

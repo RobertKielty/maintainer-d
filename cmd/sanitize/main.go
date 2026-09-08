@@ -16,8 +16,13 @@ import (
 	"time"
 
 	"maintainerd/db"
+	"maintainerd/dotproject"
 	"maintainerd/model"
+	"maintainerd/provenance"
+	"maintainerd/refparse"
 
+	"github.com/google/go-github/v55/github"
+	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 )
 
@@ -40,14 +45,21 @@ func main() {
 	}
 	store := db.NewSQLStore(dbConn)
 
-	if err := sanitize(ctx, store); err != nil {
+	var resolver *provenance.Resolver
+	if githubToken := strings.TrimSpace(os.Getenv("GITHUB_API_TOKEN")); githubToken != "" {
+		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: githubToken})
+		tc := oauth2.NewClient(ctx, ts)
+		resolver = provenance.NewResolver(github.NewClient(tc))
+	}
+
+	if err := sanitize(ctx, store, resolver); err != nil {
 		log.Fatalf("sanitize failed: %v", err)
 	}
 
 	log.Println("sanitize completed successfully")
 }
 
-func sanitize(ctx context.Context, store *db.SQLStore) error {
+func sanitize(ctx context.Context, store *db.SQLStore, resolver *provenance.Resolver) error {
 	// Ensure cache table exists.
 	if err := store.DB().AutoMigrate(&model.MaintainerRefCache{}, &model.SanitizeRunStatus{}); err != nil {
 		return fmt.Errorf("auto-migrate cache: %w", err)
@@ -60,15 +72,38 @@ func sanitize(ctx context.Context, store *db.SQLStore) error {
 
 	client := &http.Client{Timeout: 20 * time.Second}
 	for _, p := range projects {
+		// A project that has adopted .project is managed from its
+		// maintainers.yaml by dot-project-sync; its legacy ref file is on its
+		// way out and often stale. Reconciling status against it would archive
+		// maintainers who only exist in the new file, so sanitize leaves those
+		// projects alone entirely. "partial" alone is not enough: it also
+		// covers repos where the maintainers file is missing or unparseable
+		// (adoptionStatusFor), so a partial project only bypasses legacy
+		// reconciliation when a maintainer roster was actually parsed -
+		// auto-add runs off a parsed roster regardless of project.yaml.
+		dotProjectAuthoritative := p.DotProjectAdoptionStatus == dotproject.AdoptionStatusAdopted ||
+			(p.DotProjectAdoptionStatus == dotproject.AdoptionStatusPartial && p.DotProjectMaintainerCount != nil)
+		if dotProjectAuthoritative {
+			log.Printf("sanitize: skip project %d (%s), .project adoption status is %q with a parsed maintainer roster so the legacy ref is no longer authoritative", p.ID, p.Name, p.DotProjectAdoptionStatus)
+			continue
+		}
 		ref := strings.TrimSpace(p.LegacyMaintainerRef)
 		if ref == "" {
 			continue
 		}
 
+		refOwner, refRepo, refBranch, refPath, refResolvable := provenance.ParseGitHubBlobURL(ref)
+
 		cache, cacheErr := store.GetMaintainerRefCache(p.ID)
 		if cacheErr != nil {
 			log.Printf("sanitize: could not load cache for project %d (%s): %v", p.ID, p.Name, cacheErr)
 		}
+		// The conditional fetch runs against the branch URL so its ETag stays
+		// comparable run to run. This job runs every 5 minutes; on a 304 the
+		// file is byte-identical to what the last run already resolved, so
+		// GetBranch pinning and per-line blame/PR/review resolution are
+		// skipped entirely and stored provenance is reused instead of burning
+		// GitHub API budget re-deriving the same answer.
 		body, meta, notModified, err := fetchMaintainerRef(ctx, client, ref, cache)
 		if err != nil {
 			log.Printf("sanitize: skip project %d (%s), fetch error: %v", p.ID, p.Name, err)
@@ -79,11 +114,78 @@ func sanitize(ctx context.Context, store *db.SQLStore) error {
 			continue
 		}
 
+		// Pin blame lookups, permalinks, AND the analyzed body to one snapshot
+		// of the branch: blame line numbers describe the file as of the ref
+		// they were resolved at, so working from the moving branch name would
+		// let line numbers and review evidence drift apart if the branch
+		// advances between requests. The pin is memoized and lazy so a 304
+		// run whose observations all reuse stored provenance never spends the
+		// GetBranch call - but a 304 row that still needs resolving (no
+		// reusable observation yet, e.g. a pre-existing ref cache on rollout)
+		// does pin, and the 304 guarantees the cached body matches the tip.
+		// The conditional-fetch validators (ETag/Last-Modified) describe the
+		// branch response; if the analysis body is later swapped for a pinned
+		// snapshot, the cache must still store the branch body those
+		// validators were issued for, or a future 304 would reuse bytes its
+		// validator never described.
+		branchBody := body
+		refResolvedBranch := refBranch
+		refSnapshot := refBranch
+		refSnapshotPath := refPath
+		pinAttempted := false
+		pinSnapshot := func() (string, string, string) {
+			if pinAttempted || !refResolvable || resolver == nil {
+				return refSnapshot, refSnapshotPath, refResolvedBranch
+			}
+			pinAttempted = true
+			segments := strings.Split(refPath, "/")
+			branch, path := refBranch, refPath
+			b, _, err := resolver.Client.Repositories.GetBranch(ctx, refOwner, refRepo, branch, false)
+			// A blob URL cannot delimit a branch containing "/" from the file
+			// path (".../blob/release/v2/MAINTAINERS.md" parses as branch
+			// "release", path "v2/MAINTAINERS.md"), so when the first split is
+			// not a real branch, consume path segments into progressively
+			// longer branch candidates until one resolves.
+			for i := 0; err != nil && i < len(segments)-1; i++ {
+				branch = refBranch + "/" + strings.Join(segments[:i+1], "/")
+				path = strings.Join(segments[i+1:], "/")
+				b, _, err = resolver.Client.Repositories.GetBranch(ctx, refOwner, refRepo, branch, false)
+			}
+			if err != nil {
+				log.Printf("sanitize: could not pin %s/%s@%s to a commit, falling back to the branch name: %v", refOwner, refRepo, refBranch, err)
+				return refSnapshot, refSnapshotPath, refResolvedBranch
+			}
+			refResolvedBranch = branch
+			refSnapshotPath = path
+			if sha := strings.TrimSpace(b.GetCommit().GetSHA()); sha != "" {
+				refSnapshot = sha
+			}
+			return refSnapshot, refSnapshotPath, refResolvedBranch
+		}
+		if !notModified && refResolvable && resolver != nil {
+			if sha, pinnedPath, _ := pinSnapshot(); sha != refResolvedBranch {
+				pinnedURL := fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", refOwner, refRepo, sha, pinnedPath)
+				if pinnedBody, _, _, err := fetchMaintainerRef(ctx, client, pinnedURL, nil); err == nil && pinnedBody != "" {
+					body = pinnedBody
+				} else {
+					// The SHA is only trustworthy alongside the body fetched
+					// at that SHA; without it, blame and permalinks would
+					// describe different content than the branch body being
+					// analyzed, so fall back to the resolved branch name for both.
+					log.Printf("sanitize: could not fetch pinned snapshot %s, analyzing the branch body at the branch name instead: %v", pinnedURL, err)
+					refSnapshot = refResolvedBranch
+				}
+			}
+		}
+
 		projectStatuses, err := store.ListMaintainerProjectStatuses(p.ID)
 		if err != nil {
 			log.Printf("sanitize: could not load per-project statuses for project %d (%s): %v", p.ID, p.Name, err)
 			continue
 		}
+
+		handleLocations := refparse.ExtractGitHubHandleLocations(body)
+		observedAt := time.Now()
 
 		for _, m := range p.Maintainers {
 			handle := strings.TrimSpace(strings.ToLower(m.GitHubAccount))
@@ -93,10 +195,16 @@ func sanitize(ctx context.Context, store *db.SQLStore) error {
 			}
 
 			present := false
+			matchedByHandle := false
 			if handle != "" && handle != "github_missing" && handlePresent(body, handle) {
 				present = true
+				matchedByHandle = true
 			} else if namePresent(body, name) {
 				present = true
+			}
+
+			if matchedByHandle {
+				writeLegacyRefObservation(ctx, store, resolver, p, m, handle, handleLocations, refOwner, refRepo, pinSnapshot, refPath, refResolvable, notModified, observedAt)
 			}
 
 			currentStatus := projectStatuses[m.ID]
@@ -128,8 +236,8 @@ func sanitize(ctx context.Context, store *db.SQLStore) error {
 		if !notModified {
 			cache.ETag = meta.ETag
 			cache.LastModified = meta.LastModified
-			cache.BodyHash = hashBody(body)
-			cache.Body = body
+			cache.BodyHash = hashBody(branchBody)
+			cache.Body = branchBody
 		}
 		cache.LastChecked = &now
 		if err := store.UpsertMaintainerRefCache(cache); err != nil {
@@ -260,6 +368,93 @@ func namePresent(body, name string) bool {
 		return false
 	}
 	return re.FindStringIndex(body) != nil
+}
+
+// writeLegacyRefObservation records the evidence behind a legacy-ref handle
+// match: the line it was found on, and - when a resolver is configured and
+// the ref is a github.com blob URL - the commit, PR, and review state that
+// introduced it. An unresolvable ref (gist-hosted, no resolver configured)
+// records ReviewStateUnknown rather than being treated as unreviewed.
+func writeLegacyRefObservation(ctx context.Context, store *db.SQLStore, resolver *provenance.Resolver, p model.Project, m model.Maintainer, handle string, handleLocations map[string][]int, owner, repo string, pinRef func() (string, string, string), path string, refResolvable bool, reuseProvenance bool, observedAt time.Time) {
+	// handlePresent matches more spellings than the location extractor
+	// recognizes (e.g. a bare word in prose), so a match can have no known
+	// line. Record the observation anyway - the evidence that the handle is
+	// in the file stands - just without line-level provenance.
+	line := 0
+	if lines := handleLocations[handle]; len(lines) > 0 {
+		line = lines[0]
+	}
+
+	var prov provenance.LineProvenance
+	reviewState := provenance.ReviewStateUnknown
+	lineURL := ""
+	if reuseProvenance {
+		// The file is unchanged since the last run (HTTP 304), so the
+		// line-level evidence recorded then still describes it; only the
+		// observation timestamp needs refreshing. Rows whose earlier
+		// resolution came back unknown (rate-limited, transient failure)
+		// fall through and are retried below.
+		existing, err := store.GetLatestMaintainerIdentityObservationByRef(provenance.SourceLegacyRef, p.ID, "github:"+handle)
+		if err != nil {
+			log.Printf("sanitize: could not load stored legacy-ref observation for maintainer %d (%s) project %d: %v", m.ID, handle, p.ID, err)
+		} else if existing != nil && existing.SourceReviewState != "" && existing.SourceReviewState != provenance.ReviewStateUnknown {
+			prov = provenance.LineProvenance{
+				CommitSHA: existing.SourceCommitSHA,
+				PRNumber:  existing.SourcePRNumber,
+				PRURL:     existing.SourcePRURL,
+			}
+			reviewState = existing.SourceReviewState
+			line = existing.SourceLine
+			lineURL = existing.SourceLineURL
+			path = existing.SourceFilePath
+		}
+	}
+	if reviewState == provenance.ReviewStateUnknown && refResolvable && line > 0 {
+		// pinRef() yields the pinned snapshot commit when one can be resolved
+		// (memoized; falls back to the branch name), so the permalink and the
+		// blame evidence describe the same file state - including on the 304
+		// path, where a row without reusable provenance still pins before
+		// persisting a permanent SourceLineURL. It also yields the file path,
+		// which pinning may have corrected when the branch name contains "/".
+		// The third return value is the resolved branch name, needed to
+		// disambiguate when a commit is in multiple merged PRs.
+		ref, pinnedPath, branch := pinRef()
+		path = pinnedPath
+		lineURL = fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s#L%d", owner, repo, ref, path, line)
+		if resolver != nil {
+			resolved, err := resolver.Resolve(ctx, owner, repo, ref, branch, path, line)
+			if err != nil {
+				log.Printf("sanitize: provenance resolve failed for %s/%s %s#L%d: %v", owner, repo, path, line, err)
+			} else {
+				prov = resolved
+				reviewState = resolved.ReviewState
+			}
+		}
+	}
+
+	maintainerID := m.ID
+	projectID := p.ID
+	observation := &model.MaintainerIdentityObservation{
+		MaintainerID:      &maintainerID,
+		ProjectID:         &projectID,
+		Source:            provenance.SourceLegacyRef,
+		SourceRef:         "github:" + handle,
+		GitHubUser:        handle,
+		MatchStatus:       "matched",
+		MatchReason:       "present in legacy maintainer reference file",
+		Confidence:        provenance.Confidence(provenance.SourceLegacyRef, reviewState, true),
+		SourceFilePath:    path,
+		SourceLine:        line,
+		SourceCommitSHA:   prov.CommitSHA,
+		SourceLineURL:     lineURL,
+		SourcePRNumber:    prov.PRNumber,
+		SourcePRURL:       prov.PRURL,
+		SourceReviewState: reviewState,
+		ObservedAt:        observedAt,
+	}
+	if _, err := store.UpsertMaintainerIdentityObservation(observation); err != nil {
+		log.Printf("sanitize: failed to write legacy-ref observation for maintainer %d (%s) project %d: %v", m.ID, handle, p.ID, err)
+	}
 }
 
 func envOr(key, fallback string) string {

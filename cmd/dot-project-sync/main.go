@@ -16,6 +16,7 @@ import (
 	"maintainerd/dotproject"
 	"maintainerd/lfx"
 	"maintainerd/model"
+	"maintainerd/provenance"
 
 	"github.com/google/go-github/v55/github"
 	"go.uber.org/zap"
@@ -35,29 +36,36 @@ type postSyncMetrics struct {
 	CachedBodies             int64
 }
 
+// syncConfig is marshaled verbatim into audit-log rows and the startup log
+// line; it must never grow a token, password, or other credential field.
 type syncConfig struct {
-	CheckFoundationCSV bool
-	AutoAddMaintainers bool
-	Actor              string
-	FoundationOwner    string
-	FoundationRepo     string
-	FoundationRef      string
-	FoundationPath     string
-	WriteGist          bool
-	GistID             string
-	GistFilename       string
-	GistDescription    string
+	CheckFoundationCSV bool   `json:"check_foundation_csv"`
+	AutoAddMaintainers bool   `json:"auto_add_maintainers"`
+	Actor              string `json:"actor"`
+	FoundationOwner    string `json:"foundation_owner"`
+	FoundationRepo     string `json:"foundation_repo"`
+	FoundationRef      string `json:"foundation_ref"`
+	FoundationPath     string `json:"foundation_path"`
+	WriteGist          bool   `json:"write_gist"`
+	GistID             string `json:"gist_id"`
+	GistFilename       string `json:"gist_filename"`
+	GistDescription    string `json:"gist_description"`
 }
 
 const lfxTokenHelp = "LFX Platform access failed; update LFX_AUTH_TOKEN with a fresh token from " + lfx.TokenRefreshURL
 
 func main() {
 	cfg := parseFlags()
-	timeout := envDuration("DOT_PROJECT_SYNC_TIMEOUT", 10*time.Minute)
-	if strings.TrimSpace(os.Getenv("DOT_PROJECT_SYNC_TIMEOUT")) == "" &&
-		strings.EqualFold(strings.TrimSpace(os.Getenv("LFX_ENRICH_ALL_MAINTAINERS")), "true") {
+	log.Printf("dot-project sync config=%s", configJSON(cfg))
+	timeout := envDuration("DOT_PROJECT_SYNC_TIMEOUT", 50*time.Minute)
+	timeoutSource := "default"
+	if strings.TrimSpace(os.Getenv("DOT_PROJECT_SYNC_TIMEOUT")) != "" {
+		timeoutSource = "DOT_PROJECT_SYNC_TIMEOUT"
+	} else if strings.EqualFold(strings.TrimSpace(os.Getenv("LFX_ENRICH_ALL_MAINTAINERS")), "true") {
 		timeout = time.Hour
+		timeoutSource = "LFX_ENRICH_ALL_MAINTAINERS=true"
 	}
+	log.Printf("dot-project sync run timeout=%s source=%s", timeout, timeoutSource)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -103,10 +111,19 @@ func main() {
 		Discoverer: &dotproject.Discoverer{
 			Client: &dotproject.GitHubRepositoryClient{Client: client},
 		},
-		AutoAdder: buildAutoAdder(store, cfg, foundationIndex, lfxIdentityResolver{client: lfxClient}),
+		AutoAdder: buildAutoAdder(store, cfg, foundationIndex, lfxIdentityResolver{client: lfxClient}, client),
 		Enricher:  buildLFXEnricher(store, lfxClient),
 		MaintainersFileVisitor: func(project model.Project, file dotproject.FileDiscovery) {
 			log.Printf("%s has a %s file", projectLabel(project), dotProjectFileURL(file))
+		},
+		Progress: func(progress dotproject.SyncProgress) {
+			if progress.CurrentProject == "" {
+				return // final call after the loop completes; nothing left to announce
+			}
+			if progress.ProjectsProcessed == 0 {
+				log.Printf("dot-project sync starting: %d project(s) to process", progress.TotalProjects)
+			}
+			log.Printf("dot-project sync processing project %d of %d: %s", progress.ProjectsProcessed+1, progress.TotalProjects, progress.CurrentProject)
 		},
 	}
 
@@ -114,12 +131,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("dot-project sync failed: %v", err)
 	}
+	// Post-run bookkeeping must not reuse the run's context: after a clean
+	// stopped-early return it is already exhausted, and even a run that
+	// finished just inside the deadline leaves only milliseconds - either
+	// way the gist publish or metrics collection would convert a successful
+	// sync into a failed run.
+	postCtx, cancelPost := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelPost()
 	if cfg.WriteGist {
-		gist, err := publishDotProjectGist(ctx, client, cfg, summary.GistReportRows)
-		if err != nil {
-			log.Fatalf("dot-project gist publish failed: %v", err)
+		if summary.StoppedEarly {
+			// GistReportRows only covers the projects visited before the
+			// deadline; publishing it would replace the existing gist with a
+			// partial report that silently drops every unattempted project.
+			log.Printf("dot-project gist publish skipped: run stopped early, report is incomplete")
+		} else {
+			gist, err := publishDotProjectGist(postCtx, client, cfg, summary.GistReportRows)
+			if err != nil {
+				log.Fatalf("dot-project gist publish failed: %v", err)
+			}
+			log.Printf("dot-project gist published url=%s id=%s rows=%d", gist.GetHTMLURL(), gist.GetID(), len(summary.GistReportRows))
 		}
-		log.Printf("dot-project gist published url=%s id=%s rows=%d", gist.GetHTMLURL(), gist.GetID(), len(summary.GistReportRows))
 	}
 	for _, warning := range summary.WarningSummaries {
 		log.Printf("dot-project sync warning: %s", warning)
@@ -128,7 +159,7 @@ func main() {
 		log.Printf("dot-project sync project error: %s", errorSummary)
 	}
 
-	metrics, metricsErr := collectPostSyncMetrics(ctx, store)
+	metrics, metricsErr := collectPostSyncMetrics(postCtx, store)
 	if metricsErr != nil {
 		log.Printf("dot-project sync post-sync metrics failed: %v", metricsErr)
 	}
@@ -138,7 +169,7 @@ func main() {
 	}
 
 	log.Printf(
-		"dot-project sync complete loaded=%d total=%d skipped=%d skipped_archived=%d skipped_excluded=%d synced=%d errored=%d github_errors=%d rate_limit_errors=%d not_found=%d repo_only=%d partial=%d adopted=%d auto_add_candidates=%d auto_add_created=%d auto_add_linked=%d auto_add_would_create=%d auto_add_would_link=%d auto_add_skipped_foundation=%d auto_add_skipped_project=%d auto_add_skipped_invalid=%d auto_add_errored=%d lfx_attempted=%d lfx_matched=%d lfx_ambiguous=%d lfx_unmatched=%d lfx_errored=%d",
+		"dot-project sync complete loaded=%d total=%d skipped=%d skipped_archived=%d skipped_excluded=%d synced=%d errored=%d github_errors=%d rate_limit_errors=%d not_found=%d repo_only=%d partial=%d adopted=%d auto_add_candidates=%d auto_add_created=%d auto_add_linked=%d auto_add_would_create=%d auto_add_would_link=%d auto_add_skipped_foundation=%d auto_add_skipped_project=%d auto_add_skipped_invalid=%d auto_add_errored=%d lfx_attempted=%d lfx_matched=%d lfx_ambiguous=%d lfx_unmatched=%d lfx_errored=%d stopped_early=%t remaining=%d",
 		summary.Loaded,
 		summary.Total,
 		summary.Skipped,
@@ -166,6 +197,8 @@ func main() {
 		summary.Enrichment.Ambiguous,
 		summary.Enrichment.Unmatched,
 		summary.Enrichment.Errored,
+		summary.StoppedEarly,
+		summary.RemainingProjects,
 	)
 }
 
@@ -257,6 +290,7 @@ func loadFoundationMaintainers(ctx context.Context, client *github.Client, cfg s
 	}
 	index.CommitSHA = commitSHA
 	index.SourceURL = foundationCSVBlobURL(owner, repo, commitSHA, path)
+	index.Branch = ref
 	return index, nil
 }
 
@@ -264,11 +298,12 @@ func foundationCSVBlobURL(owner, repo, ref, path string) string {
 	return fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s?plain=1", owner, repo, ref, path)
 }
 
-func buildAutoAdder(store *db.SQLStore, cfg syncConfig, foundation *dotproject.FoundationMaintainerIndex, lfxResolver dotproject.LFXIdentityResolver) dotproject.MaintainerAutoAdder {
+func buildAutoAdder(store *db.SQLStore, cfg syncConfig, foundation *dotproject.FoundationMaintainerIndex, lfxResolver dotproject.LFXIdentityResolver, githubClient *github.Client) dotproject.MaintainerAutoAdder {
 	return &dotproject.AutoMaintainerAdder{
 		Store:              store,
 		Foundation:         foundation,
 		LFX:                lfxResolver,
+		Provenance:         provenance.NewResolver(githubClient),
 		Actor:              cfg.Actor,
 		CheckFoundationCSV: cfg.CheckFoundationCSV,
 		AutoAddMaintainers: cfg.AutoAddMaintainers,
@@ -278,50 +313,41 @@ func buildAutoAdder(store *db.SQLStore, cfg syncConfig, foundation *dotproject.F
 
 func buildLFXEnricher(store *db.SQLStore, client lfx.UserSearcher) dotproject.MaintainerEnricher {
 	enrichAll := strings.EqualFold(strings.TrimSpace(os.Getenv("LFX_ENRICH_ALL_MAINTAINERS")), "true")
-	defaultMaxLookups := 50
+	defaultMaxLookups := 100
 	if enrichAll {
 		defaultMaxLookups = 0
 	}
-	maxLookups := envInt("LFX_MAX_LOOKUPS", defaultMaxLookups)
-	if maxLookups < 0 {
-		maxLookups = 0
-	}
+	maxLookups := max(envInt("LFX_MAX_LOOKUPS", defaultMaxLookups), 0)
 	lastProgressLog := time.Time{}
 	lastProgressProcessed := -1
-	return &lfx.Enricher{
-		Store:      store,
-		Client:     client,
-		EnrichAll:  enrichAll,
-		MaxLookups: maxLookups,
-		Progress: func(progress lfx.EnrichmentProgress) {
-			if progress.Total <= 0 {
-				return
-			}
-			now := time.Now()
-			shouldLog := progress.Processed == 0 ||
-				progress.Processed == progress.Total ||
-				progress.Processed-lastProgressProcessed >= 25 ||
-				lastProgressLog.IsZero() ||
-				now.Sub(lastProgressLog) >= 15*time.Second
-			if !shouldLog {
-				return
-			}
-			lastProgressLog = now
-			lastProgressProcessed = progress.Processed
-			log.Printf(
-				"lfx enrichment progress processed=%d total=%d current=%s attempted=%d matched=%d ambiguous=%d unmatched=%d errored=%d skipped_limit=%d",
-				progress.Processed,
-				progress.Total,
-				progress.Current,
-				progress.Summary.Attempted,
-				progress.Summary.Matched,
-				progress.Summary.Ambiguous,
-				progress.Summary.Unmatched,
-				progress.Summary.Errored,
-				progress.Summary.SkippedLimit,
-			)
-		},
-	}
+	return &lfx.Enricher{Store: store, Client: client, EnrichAll: enrichAll, MaxLookups: maxLookups, Progress: func(progress lfx.EnrichmentProgress) {
+		if progress.Total <= 0 {
+			return
+		}
+		now := time.Now()
+		shouldLog := progress.Processed == 0 ||
+			progress.Processed == progress.Total ||
+			progress.Processed-lastProgressProcessed >= 25 ||
+			lastProgressLog.IsZero() ||
+			now.Sub(lastProgressLog) >= 15*time.Second
+		if !shouldLog {
+			return
+		}
+		lastProgressLog = now
+		lastProgressProcessed = progress.Processed
+		log.Printf(
+			"lfx enrichment progress processed=%d total=%d current=%s attempted=%d matched=%d ambiguous=%d unmatched=%d errored=%d skipped_limit=%d",
+			progress.Processed,
+			progress.Total,
+			progress.Current,
+			progress.Summary.Attempted,
+			progress.Summary.Matched,
+			progress.Summary.Ambiguous,
+			progress.Summary.Unmatched,
+			progress.Summary.Errored,
+			progress.Summary.SkippedLimit,
+		)
+	}}
 }
 
 func buildRequiredLFXClient() (*lfx.Client, error) {
@@ -359,17 +385,31 @@ func (r lfxIdentityResolver) ResolveMaintainerIdentity(ctx context.Context, gith
 	}
 	var users []lfx.User
 	var err error
+	matchedByGitHubID := false
 	if githubHandle != "" {
-		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{GitHubID: githubHandle, PageSize: 10})
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{GitHubID: githubHandle, PageSize: 100})
+		if err != nil {
+			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
+		}
+		matchedByGitHubID = len(users) > 0
+	}
+	if len(users) == 0 && email != "" {
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Email: email, PageSize: 100})
 		if err != nil {
 			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 		}
 	}
-	if len(users) == 0 && email != "" {
-		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Email: email, PageSize: 10})
+	matchedByUsername := false
+	if len(users) == 0 && githubHandle != "" {
+		// Some LFX/PCC records have no GithubID field populated, but the LF
+		// Username (the openprofile.dev slug) matches the GitHub handle. A
+		// coincidental string match, not a verified linkage, so it must not
+		// inherit "strong" the way a GitHubID/email match does below.
+		users, err = r.client.SearchUsers(ctx, lfx.UserSearch{Username: githubHandle, PageSize: 100})
 		if err != nil {
 			return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 		}
+		matchedByUsername = len(users) > 0
 	}
 	if len(users) != 1 {
 		return dotproject.LFXIdentityResult{Confidence: "unmatched", Reason: "LFX user search did not return a single user"}, nil
@@ -379,14 +419,38 @@ func (r lfxIdentityResolver) ResolveMaintainerIdentity(ctx context.Context, gith
 	if err != nil {
 		return dotproject.LFXIdentityResult{}, lfx.PlatformAccessError(err)
 	}
+	// Start weak and grant strong only for corroborated matches, mirroring
+	// lfx.confidenceFor: the email fallback can match a secondary address
+	// while returning a profile whose primary email differs, and that
+	// uncorroborated profile must not read as strong (it feeds auto-add).
+	confidence := "weak"
+	var reason string
+	switch {
+	case matchedByUsername:
+		reason = "single LFX user match by username only"
+	case matchedByGitHubID && strings.EqualFold(strings.TrimSpace(user.Type), "contact"):
+		confidence = "strong"
+		reason = "single LFX user match by GitHub ID on a claimed (contact) profile"
+	case matchedByGitHubID:
+		// A bare GitHub-ID match on a "lead" (a stale, never-claimed
+		// Salesforce row - see lfx/LFX-USER-API-NOTES.MD finding 8) must not
+		// read as strong; the identity loop below can still upgrade it to
+		// exact, mirroring lfx.confidenceFor.
+		reason = "single LFX user match by GitHub ID on an unclaimed (lead) profile"
+	case email != "" && strings.EqualFold(strings.TrimSpace(user.Email), email):
+		confidence = "strong"
+		reason = "single LFX user match by corroborated email"
+	default:
+		reason = "single LFX user match by email without a corroborating primary email"
+	}
 	result := dotproject.LFXIdentityResult{
 		UserID:     strings.TrimSpace(user.ID),
 		LFID:       strings.TrimSpace(user.Username),
 		Name:       firstNonEmpty(strings.TrimSpace(user.Name), strings.TrimSpace(user.FirstName+" "+user.LastName)),
 		Email:      strings.TrimSpace(user.Email),
 		GitHubUser: githubHandle,
-		Confidence: "strong",
-		Reason:     "single LFX user match",
+		Confidence: confidence,
+		Reason:     reason,
 	}
 	for _, identity := range identities {
 		if strings.EqualFold(strings.TrimSpace(identity.Source), "github") && githubHandle != "" && strings.EqualFold(identity.Username, githubHandle) {
@@ -566,16 +630,7 @@ func buildAuditEvent(summary dotproject.SyncSummary, metrics *postSyncMetrics, m
 		"auto_add_lfx_errored":          summary.AutoAdd.LFXErrored,
 		"auto_add_errored":              summary.AutoAdd.Errored,
 		"auto_add_audit_failures":       summary.AutoAdd.AuditFailures,
-		"check_foundation_csv":          cfg.CheckFoundationCSV,
-		"auto_add_maintainers":          cfg.AutoAddMaintainers,
-		"dot_project_sync_actor":        strings.TrimSpace(cfg.Actor),
-		"foundation_csv_owner":          strings.TrimSpace(cfg.FoundationOwner),
-		"foundation_csv_repo":           strings.TrimSpace(cfg.FoundationRepo),
-		"foundation_csv_ref":            strings.TrimSpace(cfg.FoundationRef),
-		"foundation_csv_path":           strings.TrimSpace(cfg.FoundationPath),
-		"write_gist":                    cfg.WriteGist,
-		"gist_id":                       strings.TrimSpace(cfg.GistID),
-		"gist_filename":                 strings.TrimSpace(cfg.GistFilename),
+		"config":                        cfg,
 		"gist_report_rows":              len(summary.GistReportRows),
 	}
 	if len(summary.ErrorSummaries) > 0 {
@@ -625,16 +680,7 @@ func buildAuditEvent(summary dotproject.SyncSummary, metrics *postSyncMetrics, m
 
 func buildStartAuditEvent(cfg syncConfig) model.AuditLog {
 	metadata := map[string]any{
-		"check_foundation_csv":   cfg.CheckFoundationCSV,
-		"auto_add_maintainers":   cfg.AutoAddMaintainers,
-		"dot_project_sync_actor": strings.TrimSpace(cfg.Actor),
-		"foundation_csv_owner":   strings.TrimSpace(cfg.FoundationOwner),
-		"foundation_csv_repo":    strings.TrimSpace(cfg.FoundationRepo),
-		"foundation_csv_ref":     strings.TrimSpace(cfg.FoundationRef),
-		"foundation_csv_path":    strings.TrimSpace(cfg.FoundationPath),
-		"write_gist":             cfg.WriteGist,
-		"gist_id":                strings.TrimSpace(cfg.GistID),
-		"gist_filename":          strings.TrimSpace(cfg.GistFilename),
+		"config": cfg,
 	}
 	body, err := json.Marshal(metadata)
 	if err != nil {
@@ -649,6 +695,14 @@ func buildStartAuditEvent(cfg syncConfig) model.AuditLog {
 		Message:  fmt.Sprintf("DOT_PROJECT_SYNC_RUN_STARTED: actor=%s auto_add_maintainers=%t check_foundation_csv=%t", actor, cfg.AutoAddMaintainers, cfg.CheckFoundationCSV),
 		Metadata: string(body),
 	}
+}
+
+func configJSON(cfg syncConfig) json.RawMessage {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return body
 }
 
 func firstNonEmpty(values ...string) string {

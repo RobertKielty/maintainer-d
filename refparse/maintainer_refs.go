@@ -4,64 +4,92 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+)
+
+var (
+	atHandleRe       = regexp.MustCompile(`(?i)(^|[^a-z0-9_-])@([a-z0-9-]{1,39})`)
+	githubURLRe      = regexp.MustCompile(`(?i)github\.com/([a-z0-9-]{1,39})`)
+	listItemHandleRe = regexp.MustCompile(`(?i)^\s*[-*]\s*([a-z0-9][a-z0-9-]{0,38})\b`)
+	githubKeyRe      = regexp.MustCompile(`(?i)^\s*github\s*:\s*([a-z0-9][a-z0-9-]{0,38})\b`)
 )
 
 // ExtractGitHubHandles scans maintainer ref content and returns a set of detected GitHub handles.
 func ExtractGitHubHandles(refBody string) map[string]struct{} {
-	result := make(map[string]struct{})
+	locations := ExtractGitHubHandleLocations(refBody)
+	result := make(map[string]struct{}, len(locations))
+	for handle := range locations {
+		result[handle] = struct{}{}
+	}
+	return result
+}
+
+// ExtractGitHubHandleLocations scans maintainer ref content the same way
+// ExtractGitHubHandles does, but also records the 1-based line each handle
+// was found on, so a caller can resolve the line to its commit, PR, and
+// review state. A handle found on more than one line keeps every line.
+func ExtractGitHubHandleLocations(refBody string) map[string][]int {
+	result := make(map[string][]int)
 	if refBody == "" {
 		return result
 	}
-	parseMarkdownTablesForHandles(refBody, result)
-	// Match @username
-	atRe := regexp.MustCompile(`(?i)(^|[^a-z0-9_-])@([a-z0-9-]{1,39})`)
-	for _, match := range atRe.FindAllStringSubmatch(refBody, -1) {
-		if len(match) < 3 {
-			continue
+	add := func(handle string, line int) {
+		if handle == "" || isReservedHandle(handle) {
+			return
 		}
-		handle := strings.ToLower(match[2])
-		result[handle] = struct{}{}
+		handle = strings.ToLower(handle)
+		result[handle] = appendLineOnce(result[handle], line)
 	}
-	// Match github.com/username (filter out repo paths like github.com/org/repo)
-	urlRe := regexp.MustCompile(`(?i)github\.com/([a-z0-9-]{1,39})`)
-	for _, match := range urlRe.FindAllStringSubmatchIndex(refBody, -1) {
-		if len(match) < 4 {
-			continue
-		}
-		handle := strings.ToLower(refBody[match[2]:match[3]])
-		if handle == "organizations" || handle == "orgs" || handle == "repos" {
-			continue
-		}
-		// If the matched handle is followed by a path segment, skip it.
-		if match[1] < len(refBody) && refBody[match[1]] == '/' {
-			continue
-		}
-		result[handle] = struct{}{}
-	}
-	// Match YAML list items like "- username"
-	listItemRe := regexp.MustCompile(`(?i)^\s*[-*]\s*([a-z0-9][a-z0-9-]{0,38})\b`)
-	// Match YAML key "github: username"
-	keyRe := regexp.MustCompile(`(?i)^\s*github\s*:\s*([a-z0-9][a-z0-9-]{0,38})\b`)
-	for _, line := range strings.Split(refBody, "\n") {
-		if match := listItemRe.FindStringSubmatch(line); len(match) > 1 {
-			handle := strings.ToLower(match[1])
-			if handle != "organizations" && handle != "orgs" && handle != "repos" {
-				result[handle] = struct{}{}
+
+	lines := strings.Split(refBody, "\n")
+	parseMarkdownTableHandleLocations(lines, add)
+
+	for lineIdx, line := range lines {
+		lineNumber := lineIdx + 1
+		for _, match := range atHandleRe.FindAllStringSubmatch(line, -1) {
+			if len(match) < 3 {
+				continue
 			}
+			add(match[2], lineNumber)
 		}
-		if match := keyRe.FindStringSubmatch(line); len(match) > 1 {
-			handle := strings.ToLower(match[1])
-			if handle != "organizations" && handle != "orgs" && handle != "repos" {
-				result[handle] = struct{}{}
+		for _, match := range githubURLRe.FindAllStringSubmatchIndex(line, -1) {
+			if len(match) < 4 {
+				continue
 			}
+			handle := line[match[2]:match[3]]
+			// If the matched handle is followed by a path segment, skip it.
+			if match[1] < len(line) && line[match[1]] == '/' {
+				continue
+			}
+			add(handle, lineNumber)
+		}
+		if match := listItemHandleRe.FindStringSubmatch(line); len(match) > 1 {
+			add(match[1], lineNumber)
+		}
+		if match := githubKeyRe.FindStringSubmatch(line); len(match) > 1 {
+			add(match[1], lineNumber)
 		}
 	}
 	return result
 }
 
-func parseMarkdownTablesForHandles(refBody string, result map[string]struct{}) {
-	lines := strings.Split(refBody, "\n")
+func appendLineOnce(lines []int, line int) []int {
+	if slices.Contains(lines, line) {
+		return lines
+	}
+	return append(lines, line)
+}
+
+func isReservedHandle(handle string) bool {
+	switch strings.ToLower(handle) {
+	case "organizations", "orgs", "repos":
+		return true
+	}
+	return false
+}
+
+func parseMarkdownTableHandleLocations(lines []string, add func(handle string, line int)) {
 	if len(lines) < 2 {
 		return
 	}
@@ -108,7 +136,7 @@ func parseMarkdownTablesForHandles(refBody string, result map[string]struct{}) {
 	}
 	isValidHandle := func(handle string) bool {
 		handle = strings.ToLower(strings.TrimSpace(handle))
-		if handle == "" || handle == "organizations" || handle == "orgs" || handle == "repos" {
+		if handle == "" || isReservedHandle(handle) {
 			return false
 		}
 		if len(handle) > 39 {
@@ -164,7 +192,7 @@ func parseMarkdownTablesForHandles(refBody string, result map[string]struct{}) {
 			if !isValidHandle(cell) {
 				continue
 			}
-			result[strings.ToLower(cell)] = struct{}{}
+			add(cell, row+1)
 		}
 		i++
 	}

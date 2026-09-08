@@ -592,3 +592,246 @@ func TestUpsertRemoteUserTeam(t *testing.T) {
 func strPtr(value string) *string {
 	return &value
 }
+
+// The update branch of the upsert must carry every column a caller can set;
+// dropping fields there silently freezes existing production rows at their
+// pre-migration values while fresh rows (which go through Create) look fine.
+func TestUpsertMaintainerIdentityObservationUpdatesProfileAndProvenanceFields(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	maintainerID := uint(1)
+	projectID := uint(1)
+	created, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		MaintainerID: &maintainerID,
+		ProjectID:    &projectID,
+		Source:       "lfx",
+		SourceRef:    "github:example-handle",
+		SourceUserID: "user-1",
+		MatchStatus:  "matched",
+		Confidence:   "weak",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	lastModified := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	identityCount := 2
+	updated, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		MaintainerID:         &maintainerID,
+		ProjectID:            &projectID,
+		Source:               "lfx",
+		SourceRef:            "github:example-handle",
+		SourceUserID:         "user-1",
+		MatchStatus:          "chosen",
+		Confidence:           "strong",
+		ObservedAt:           time.Now().UTC(),
+		SourceUserType:       "contact",
+		SourceGitHubID:       "example-handle",
+		SourceLastModifiedAt: &lastModified,
+		IdentityCount:        &identityCount,
+		SourceFilePath:       "maintainers.yaml",
+		SourceLine:           12,
+		SourceCommitSHA:      "abc123",
+		SourceLineURL:        "https://github.com/example-org/.project/blob/abc123/maintainers.yaml#L12",
+		SourcePRNumber:       42,
+		SourcePRURL:          "https://github.com/example-org/.project/pull/42",
+		SourceReviewState:    "approved",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, created.ID, updated.ID, "second upsert must update the existing row, not create a new one")
+	assert.Equal(t, "chosen", updated.MatchStatus)
+	assert.Equal(t, "contact", updated.SourceUserType)
+	assert.Equal(t, "example-handle", updated.SourceGitHubID)
+	require.NotNil(t, updated.SourceLastModifiedAt)
+	assert.True(t, updated.SourceLastModifiedAt.Equal(lastModified))
+	require.NotNil(t, updated.IdentityCount, "a measured identity count must persist; NULL means never measured")
+	assert.Equal(t, 2, *updated.IdentityCount)
+	assert.Equal(t, "maintainers.yaml", updated.SourceFilePath)
+	assert.Equal(t, 12, updated.SourceLine)
+	assert.Equal(t, "abc123", updated.SourceCommitSHA)
+	assert.Equal(t, "https://github.com/example-org/.project/blob/abc123/maintainers.yaml#L12", updated.SourceLineURL)
+	assert.Equal(t, 42, updated.SourcePRNumber)
+	assert.Equal(t, "https://github.com/example-org/.project/pull/42", updated.SourcePRURL)
+	assert.Equal(t, "approved", updated.SourceReviewState)
+}
+
+// An observation recorded before its maintainer existed carries a NULL
+// maintainer_id. A later upsert for the same source/project/ref that does
+// know the maintainer must adopt that row, not insert a duplicate next to it.
+func TestUpsertMaintainerIdentityObservationAdoptsOrphanRow(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(7)
+	orphan, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:   &projectID,
+		Source:      "dot-project",
+		SourceRef:   "github:example-handle",
+		MatchStatus: "matched",
+		ObservedAt:  time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.Nil(t, orphan.MaintainerID)
+
+	maintainerID := uint(31)
+	adopted, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		MaintainerID: &maintainerID,
+		ProjectID:    &projectID,
+		Source:       "dot-project",
+		SourceRef:    "github:example-handle",
+		MatchStatus:  "matched",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, orphan.ID, adopted.ID, "upsert must adopt the orphan row, not create a duplicate")
+	require.NotNil(t, adopted.MaintainerID)
+	assert.Equal(t, maintainerID, *adopted.MaintainerID)
+
+	var count int64
+	require.NoError(t, db.Model(&model.MaintainerIdentityObservation{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+func TestUpsertMaintainerIdentityObservationDoesNotAdoptOrphanForDifferentHandleSharingProfile(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	// Two GitHub handles resolved to the same LFX profile in the same
+	// project - an orphan row for the first handle must not be adopted by
+	// the second handle's upsert just because source_user_id matches.
+	projectID := uint(7)
+	orphan, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:    &projectID,
+		Source:       "lfx",
+		SourceRef:    "github:handle-one",
+		SourceUserID: "sfid-shared",
+		MatchStatus:  "matched",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.Nil(t, orphan.MaintainerID)
+
+	maintainerID := uint(31)
+	adopted, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		MaintainerID: &maintainerID,
+		ProjectID:    &projectID,
+		Source:       "lfx",
+		SourceRef:    "github:handle-two",
+		SourceUserID: "sfid-shared",
+		MatchStatus:  "matched",
+		ObservedAt:   time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, orphan.ID, adopted.ID, "upsert must not adopt a different handle's orphan row")
+
+	var refetchedOrphan model.MaintainerIdentityObservation
+	require.NoError(t, db.First(&refetchedOrphan, orphan.ID).Error)
+	assert.Nil(t, refetchedOrphan.MaintainerID, "the first handle's orphan row must remain unadopted")
+
+	var count int64
+	require.NoError(t, db.Model(&model.MaintainerIdentityObservation{}).Count(&count).Error)
+	assert.Equal(t, int64(2), count, "each handle must keep its own row")
+}
+
+func TestAdoptMaintainerIdentityObservations(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(7)
+	for _, source := range []string{"dot-project", "foundation-csv"} {
+		_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+			ProjectID:   &projectID,
+			Source:      source,
+			SourceRef:   "github:example-handle",
+			MatchStatus: "matched",
+			ObservedAt:  time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+	_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:   &projectID,
+		Source:      "dot-project",
+		SourceRef:   "github:other-handle",
+		MatchStatus: "matched",
+		ObservedAt:  time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	adopted, err := store.AdoptMaintainerIdentityObservations(31, projectID, "github:example-handle")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), adopted, "both sources for the handle must be adopted")
+
+	var remaining int64
+	require.NoError(t, db.Model(&model.MaintainerIdentityObservation{}).Where("maintainer_id IS NULL").Count(&remaining).Error)
+	assert.Equal(t, int64(1), remaining, "the unrelated handle's row must stay unadopted")
+}
+
+func TestRetireStaleMaintainerIdentityObservationsDeletesProfilesAbsentFromLatestLookup(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(7)
+	older := time.Now().UTC().Add(-time.Hour)
+	for _, userID := range []string{"sfid-a", "sfid-b"} {
+		_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+			ProjectID:    &projectID,
+			Source:       "lfx",
+			SourceRef:    "github:example-handle",
+			SourceUserID: userID,
+			MatchStatus:  "duplicate",
+			ObservedAt:   older,
+		})
+		require.NoError(t, err)
+	}
+	// An unmatched row (no SourceUserID) for the same candidate must never be
+	// touched by retirement - it isn't part of the profile set.
+	_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+		ProjectID:   &projectID,
+		Source:      "lfx",
+		SourceRef:   "github:example-handle",
+		MatchStatus: "unmatched",
+		ObservedAt:  older,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	deleted, err := store.RetireStaleMaintainerIdentityObservations("lfx", &projectID, "github:example-handle", []string{"sfid-a"}, now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted, "only the profile absent from the keep list must be retired")
+
+	var remaining []model.MaintainerIdentityObservation
+	require.NoError(t, db.Where("source = ? AND source_ref = ?", "lfx", "github:example-handle").Find(&remaining).Error)
+	require.Len(t, remaining, 2, "the kept profile and the unmatched row must survive")
+	var sourceUserIDs []string
+	for _, obs := range remaining {
+		sourceUserIDs = append(sourceUserIDs, obs.SourceUserID)
+	}
+	assert.Contains(t, sourceUserIDs, "sfid-a")
+	assert.Contains(t, sourceUserIDs, "")
+	assert.NotContains(t, sourceUserIDs, "sfid-b")
+}
+
+func TestRetireStaleMaintainerIdentityObservationsWithEmptyKeepListRetiresEverything(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewSQLStore(db)
+
+	projectID := uint(9)
+	older := time.Now().UTC().Add(-time.Hour)
+	for _, userID := range []string{"sfid-a", "sfid-b"} {
+		_, err := store.UpsertMaintainerIdentityObservation(&model.MaintainerIdentityObservation{
+			ProjectID:    &projectID,
+			Source:       "lfx",
+			SourceRef:    "github:example-handle",
+			SourceUserID: userID,
+			MatchStatus:  "duplicate",
+			ObservedAt:   older,
+		})
+		require.NoError(t, err)
+	}
+
+	now := time.Now().UTC()
+	deleted, err := store.RetireStaleMaintainerIdentityObservations("lfx", &projectID, "github:example-handle", nil, now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), deleted, "an empty keep list (the lookup found no profiles) must retire every prior profile row")
+}

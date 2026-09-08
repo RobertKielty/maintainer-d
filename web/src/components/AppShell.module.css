@@ -173,12 +173,13 @@
 .searchBand {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 248, 251, 0.98));
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  border-bottom: 1px solid var(--md-border, rgba(15, 23, 42, 0.18));
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
 }
 
 .searchBandInner {
-  width: 100%;
+  width: 80%;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 16px 24px 18px;
 }
@@ -191,20 +192,32 @@
   width: 100%;
 }
 
+/*
+ * clo-ui's Searchbar renders the visible box as a plain (non-module) "search"
+ * class on the wrapping div, with border-0/shadow-none forced with
+ * !important on the <input> itself by Bootstrap utilities. Styling the
+ * input directly is a losing fight against !important, so the border and
+ * focus ring live on the container instead.
+ */
+.searchbar :global(.search) {
+  width: 100%;
+  border: 2px solid rgba(214, 34, 147, 0.55);
+  border-radius: 8px;
+  background: var(--md-card-bg, #ffffff);
+}
+
+.searchbar :global(.search:focus-within) {
+  border-color: #d62293;
+  box-shadow: 0 0 0 3px rgba(214, 34, 147, 0.14);
+}
+
 .searchbar :global(input) {
   width: 100%;
   max-width: none;
-  border: 2px solid rgba(214, 34, 147, 0.55);
-  background: var(--md-card-bg, #ffffff);
+  background: transparent;
   color: var(--md-card-text, #0f172a);
-  box-shadow: none;
   height: 46px;
   padding: 10px 14px;
-}
-
-.searchbar :global(input:focus) {
-  border-color: #d62293;
-  box-shadow: 0 0 0 3px rgba(214, 34, 147, 0.14);
 }
 
 .searchbar :global(input::placeholder) {
@@ -248,9 +261,17 @@
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
 }
 
-[data-theme='dark'] .searchbar :global(input) {
+[data-theme='dark'] .searchbar :global(.search) {
   background: #16191f;
-  border-color: rgba(255, 94, 196, 0.38);
+  border-color: #6b7280;
+}
+
+[data-theme='dark'] .searchbar :global(.search:focus-within) {
+  border-color: #9ca3af;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.25);
+}
+
+[data-theme='dark'] .searchbar :global(input) {
   color: #f3f5f9;
 }
 

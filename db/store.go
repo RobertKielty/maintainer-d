@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"time"
 
 	"maintainerd/model"
 
@@ -57,6 +58,8 @@ type Store interface {
 	GetDotProjectSyncState(projectID uint) (*model.DotProjectSyncState, error)
 	UpsertDotProjectSyncState(state *model.DotProjectSyncState) error
 	UpsertMaintainerIdentityObservation(observation *model.MaintainerIdentityObservation) (*model.MaintainerIdentityObservation, error)
+	AdoptMaintainerIdentityObservations(maintainerID, projectID uint, sourceRef string) (int64, error)
+	RetireStaleMaintainerIdentityObservations(source string, projectID *uint, sourceRef string, keepSourceUserIDs []string, observedBefore time.Time) (int64, error)
 	GetLatestMaintainerIdentityObservation(source string, maintainerID uint) (*model.MaintainerIdentityObservation, error)
 	GetLatestMaintainerIdentityObservationByRef(source string, projectID uint, sourceRef string) (*model.MaintainerIdentityObservation, error)
 	ListMaintainerIdentityObservations(maintainerID uint) ([]model.MaintainerIdentityObservation, error)

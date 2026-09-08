@@ -41,7 +41,7 @@ Add a canonical LFX identifier to `Maintainer` so reports can directly distingui
 LFXUserID string `gorm:"size:128;index"`
 ```
 
-Do not treat the presence of an LFX ID as a maintainer registration gate by itself. It is reporting and enrichment data; project maintainer registration remains governed by dot-project and foundation CSV rules.
+Do not treat the presence of an LFX ID as a maintainer registration gate by itself. It is reporting and enrichment data; the authoritative membership source for project maintainer registration is inclusion in the "project-maintainers" team in the maintainers.yaml file in a .project repo. Note that the default auto-add policy additionally requires corroboration by cncf/foundation project-maintainers.csv membership (`--check-foundation-csv`, default `true`; an entry with no CSV match is skipped, not auto-added).
 
 Suggested new model:
 
@@ -62,9 +62,9 @@ type MaintainerIdentityObservation struct {
     CompanyName  string `gorm:"size:255"`
     CompanyRef   string `gorm:"size:128"` // LFX account ID when available
 
-    MatchStatus  string `gorm:"size:32;index"` // matched, ambiguous, unmatched, error
+    MatchStatus  string `gorm:"size:32;index"` // matched, chosen, duplicate, unmatched, error
     MatchReason  string `gorm:"size:255"`
-    Confidence   string `gorm:"size:32"`       // exact, strong, weak
+    Confidence   string `gorm:"size:32"`       // exact, strong, medium, weak
     RawPayload    string `gorm:"type:jsonb"`
     ObservedAt    time.Time `gorm:"index"`
 }
@@ -76,15 +76,43 @@ This lets the maintainer route show a unified view:
 - observed values by source
 - differences between sources
 - source links or IDs used to support each value
-- ambiguous matches that need staff review
+- duplicate LFX profile groups (`chosen`/`duplicate` rows) that need staff review
 
 Canonical fields should not be overwritten blindly. The first implementation should only fill missing canonical fields automatically when the match is exact or strong, and record an observation otherwise.
 
-Confidence definitions:
+Confidence definitions (updated after `lfx/LFX-USER-API-NOTES.MD` finding 8 identified a live scoring
+bug and this was fixed - see `lfx/enricher.go` `confidenceFor`):
 
-- `exact`: LFX user search resolves to a single user and `GetUserIdentities` confirms a linked GitHub identity whose source is `github` and whose username matches the maintainer GitHub handle case-insensitively.
-- `strong`: LFX user search resolves to a single user through a strong identifier, but without verified GitHub identity confirmation. Examples: the searched email equals the returned user email case-insensitively, or GitHub-handle search returns exactly one user but the identity endpoint does not confirm a GitHub username.
-- `weak`: LFX user search returns a plausible single user through weaker supporting data only, such as name/company similarity. Do not use weak matches for automatic canonical field updates.
+- `exact`: `GetUserIdentities` confirms a linked GitHub identity whose source is `github` and whose username matches the maintainer GitHub handle case-insensitively. This holds regardless of the matched user's `Type`.
+- `strong`: the searched email equals the returned user's email case-insensitively, **or** GitHub-handle search matched this user and the user's `Type` is `contact` (a claimed profile).
+- `weak`: everything else, including a GitHub-handle match whose `Type` is `lead` (a stale, never-claimed Salesforce row) with no identity confirmation. `Type` is a demotion signal, not a hard gate - a `lead` record can still carry confirmed identities and score `exact`. Do not use weak matches for automatic canonical field updates.
+
+### PR-Reviewed Provenance Confidence (dot-project / foundation-csv / legacy-ref)
+
+The LFX confidence tiers above are unrelated to the confidence tiers for the three file-based
+observation sources (`dot-project`, `foundation-csv`, `legacy-ref`). Those three are derived from
+whether a human reviewed and approved the pull request that introduced the line where the GitHub
+handle was found - not from an LFX identity match. The evidence is resolved by the `provenance`
+package (blame -> commit -> pull request -> review state) and stored on the observation's
+`SourceFilePath`, `SourceLine`, `SourceCommitSHA`, `SourceLineURL`, `SourcePRNumber`, `SourcePRURL`,
+and `SourceReviewState` fields, and the confidence itself is derived by `provenance.Confidence`:
+
+| Source | Review state | Confidence |
+|---|---|---|
+| `dot-project` (`project-maintainers` team membership) | approved | `exact` |
+| `dot-project` | unreviewed / direct-push | `strong` |
+| `dot-project` | unknown (unresolvable) | `strong` (one tier below `exact`) |
+| `foundation-csv` | approved | `strong` |
+| `foundation-csv` | unreviewed / direct-push | `medium` |
+| `foundation-csv` | unknown (unresolvable) | `medium` (one tier below `strong`) |
+| `foundation-csv`, no CSV lookup performed at all | - | `""` (asserts nothing) |
+| `legacy-ref` | approved | `medium` |
+| `legacy-ref` | unreviewed / direct-push | `weak` |
+| `legacy-ref` | unknown (unresolvable) | `weak` (one tier below `medium`) |
+
+`unknown` means the source could not be resolved (e.g. a gist-hosted legacy ref, or no GitHub
+resolver configured) - it must never be reported as `direct-push` or `unreviewed`, since neither of
+those would be true; an unresolvable source is not negative evidence.
 
 ## LFX Data Worth Recording
 
@@ -139,7 +167,11 @@ Minimal operations:
 - `SearchUsers(ctx, query)` using `GET /v2/users/search`
 - `GetUserIdentities(ctx, salesforceID)` using `GET /v1/users/{salesforceID}/identities`
 - `SearchProjects(ctx, nameOrSlug)` using `GET /v1/projects/search` or `GET /v1/projects`
-- `ListProjectMaintainers(ctx, projectID, filters)` using `GET /v1/projects/{projectID}/maintainers`
+- `ListProjectMaintainers(ctx, projectID, filters)` using `GET /v1/maintainers?$filter=ProjectID eq {projectID}`
+  (not `/v1/projects/{projectID}/maintainers` - that path does not exist; confirmed by a live 404
+  and by the downloaded `user-service` OpenAPI spec, which instead documents a top-level
+  `findMaintainers` operation at `/v1/maintainers`, filterable by `ProjectID`, `GithubID`, `Role`,
+  `IsUserBot`, and `Repository`. See `lfx/LFX-USER-API-NOTES.MD` finding 12.)
 - optional later: `LookupAccount(ctx, name, domain)` using `GET /v3/accounts/lookup`
 - optional later: `ListAccountProjectRoles(ctx, accountID, projectID)` using `GET /v3/accounts/{accountID}/project/{projectID}/roles`
 
@@ -155,7 +187,15 @@ Use exact identifiers before fuzzy human data.
 6. Project maintainer lookup by resolved LFX user ID and resolved LFX project ID.
 7. Name/company comparison only as supporting evidence, not as a primary identifier.
 
-When multiple LFX users match, record `MatchStatus=ambiguous` and do not update canonical fields.
+When multiple LFX users match the same GitHub handle or email - a known upstream LFX data-quality
+issue, since LFX has no 1:1 mapping between profile IDs and GitHub identities (229 duplicate-GithubID
+groups were found across CNCF projects in one external audit) - record one `MaintainerIdentityObservation`
+row per matched LFX profile, each with its own fetched identities and its own confidence. Rank the
+candidates (confidence, then `contact` before `lead`, then higher identity count, then more recently
+modified, then a stable ID tiebreak) and mark the top-ranked row `MatchStatus=chosen`; mark the rest
+`MatchStatus=duplicate`. Only the `chosen` row drives canonical field updates, under the existing
+fill-only-if-missing policy below. All rows are surfaced on the maintainer route so staff can see
+every LFX profile bound to a maintainer.
 
 When no LFX user matches, record `MatchStatus=unmatched` so future runs can back off instead of querying every hour forever.
 
@@ -187,7 +227,7 @@ Use these defaults:
 
 - cache successful LFX observations for 30 days
 - cache unmatched lookups for 7 days
-- cache ambiguous/error lookups for 1 day
+- cache error lookups for 1 day
 - cap each dot-project sync run to a configurable number of LFX lookups
 - batch by source priority: dot-project handles first, then existing maintainers with missing data, then stale observations
 - record upstream status and failures in audit metadata
