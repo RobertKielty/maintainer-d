@@ -29,9 +29,23 @@ jobs:
             --watchlist plugins/fossa/fossa-api-watchlist.json \
             --report-file "${RUNNER_TEMP}/fossa-api-watch-report.md" \
             --github-output "${GITHUB_OUTPUT}"
+          cat "${RUNNER_TEMP}/fossa-api-watch-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Check whether issue notifications are available
+        id: issues
+        if: steps.watch.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          enabled=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.has_issues')
+          echo "enabled=${enabled}" >> "${GITHUB_OUTPUT}"
+          if [[ "${enabled}" == "false" ]]; then
+            echo "::notice::Issues are disabled; FOSSA API drift findings are available in the job summary."
+          fi
 
       - name: Ensure the fossa-api-watch label exists
-        if: steps.watch.outputs.has_changes == 'true'
+        if: steps.watch.outputs.has_changes == 'true' && steps.issues.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -41,7 +55,7 @@ jobs:
             --force
 
       - name: Open or update an issue with the findings
-        if: steps.watch.outputs.has_changes == 'true'
+        if: steps.watch.outputs.has_changes == 'true' && steps.issues.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
