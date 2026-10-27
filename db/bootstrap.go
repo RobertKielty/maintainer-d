@@ -122,7 +122,7 @@ func loadMaintainersAndProjects(db *gorm.DB, spreadsheetID, credentialsPath stri
 
 	srv, err := sheets.NewService(
 		ctx,
-		option.WithCredentialsFile(credentialsPath),
+		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsPath),
 		option.WithScopes(sheets.SpreadsheetsReadonlyScope),
 	)
 
@@ -248,7 +248,7 @@ func loadStaff(db *gorm.DB, spreadsheetID, credentialsPath string) error {
 
 	srv, err := sheets.NewService(
 		ctx,
-		option.WithCredentialsFile(credentialsPath),
+		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsPath),
 		option.WithScopes(sheets.SpreadsheetsReadonlyScope),
 	)
 
