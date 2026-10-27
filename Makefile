@@ -9,8 +9,6 @@ IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd:$(TAG)
 IMAGE_LATEST ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd:latest
 DOT_PROJECT_SYNC_IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-dot-project-sync:$(TAG)
 DOT_PROJECT_SYNC_IMAGE_LATEST ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-dot-project-sync:latest
-SANITIZE_IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-sanitize:$(TAG)
-SANITIZE_IMAGE_LATEST ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-sanitize:latest
 MIGRATE_IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-migrate:$(TAG)
 MIGRATE_IMAGE_LATEST ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-migrate:latest
 ONBOARDING_BACKFILL_IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-onboarding-backfill:$(TAG)
@@ -63,11 +61,6 @@ mntrd-image-build:
 dot-project-sync-image-build:
 	@echo "Building dot-project sync image: $(DOT_PROJECT_SYNC_IMAGE)"
 	@$(CONTAINER_TOOL) build $(BUILD_PROGRESS_FLAG) $(DOCKER_BUILD_EXTRA) -t $(DOT_PROJECT_SYNC_IMAGE) -f Dockerfile --target dot-project-sync .
-
-.PHONY: sanitize-image-build
-sanitize-image-build:
-	@echo "Building sanitize image: $(SANITIZE_IMAGE)"
-	@$(CONTAINER_TOOL) build $(BUILD_PROGRESS_FLAG) $(DOCKER_BUILD_EXTRA) -t $(SANITIZE_IMAGE) -f Dockerfile --target sanitize .
 
 .PHONY: migrate-image-build
 migrate-image-build:
@@ -175,21 +168,6 @@ dot-project-sync-image-push: dot-project-sync-image-build
 	@echo "Tagging and pushing latest: $(DOT_PROJECT_SYNC_IMAGE_LATEST)"
 	@$(CONTAINER_TOOL) tag $(DOT_PROJECT_SYNC_IMAGE) $(DOT_PROJECT_SYNC_IMAGE_LATEST)
 	@$(CONTAINER_TOOL) push $(DOT_PROJECT_SYNC_IMAGE_LATEST)
-
-.PHONY: sanitize-image-push
-sanitize-image-push: sanitize-image-build
-	@echo "Ensuring $(CONTAINER_TOOL) is logged in to $(REGISTRY) (uses GHCR_TOKEN if set)"
-	@if [ -n "$(GHCR_TOKEN)" ]; then \
-		echo "Logging into $(REGISTRY) as $(GHCR_USER) using token from GHCR_TOKEN"; \
-		echo "$(GHCR_TOKEN)" | $(CONTAINER_TOOL) login $(REGISTRY) -u "$(GHCR_USER)" --password-stdin; \
-	else \
-		echo "GHCR_TOKEN not set; attempting push with existing auth"; \
-	fi
-	@echo "Pushing image: $(SANITIZE_IMAGE)"
-	@$(CONTAINER_TOOL) push $(SANITIZE_IMAGE)
-	@echo "Tagging and pushing latest: $(SANITIZE_IMAGE_LATEST)"
-	@$(CONTAINER_TOOL) tag $(SANITIZE_IMAGE) $(SANITIZE_IMAGE_LATEST)
-	@$(CONTAINER_TOOL) push $(SANITIZE_IMAGE_LATEST)
 
 .PHONY: migrate-image-push
 migrate-image-push: migrate-image-build
@@ -310,58 +288,22 @@ dot-project-sync-run:
 	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) create job --from=cronjob/dot-project-sync $$job; \
 	'
 
-.PHONY: bootstrap-run
-bootstrap-run: ensure-ns sops-apply-bootstrap-secrets apply-creds
-	@bash -c 'set -euo pipefail; \
-	echo "Verifying maintainerd-db-env exists in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) get secret maintainerd-db-env >/dev/null; \
-	echo "Recreating bootstrap job in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete job/maintainerd-bootstrap --ignore-not-found; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/bootstrap-job.yaml; \
-	echo "Waiting for bootstrap job to complete [ctx=$(CTX_STR)]"; \
-	if ! kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) wait --for=condition=complete job/maintainerd-bootstrap --timeout=600s; then \
-		echo "Bootstrap job failed or timed out. Recent logs:"; \
-		kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) logs job/maintainerd-bootstrap --tail=200 || true; \
-		exit 1; \
-	fi; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) logs job/maintainerd-bootstrap --tail=200; \
-	echo "Bootstrap job completed."; \
-	'
-
-.PHONY: bootstrap-run-dev
-bootstrap-run-dev: ensure-ns apply-env apply-creds
-	@bash -c 'set -euo pipefail; \
-	echo "Verifying maintainerd-db-env exists in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) get secret maintainerd-db-env >/dev/null; \
-	echo "Recreating bootstrap job in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete job/maintainerd-bootstrap --ignore-not-found; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/bootstrap-job.yaml; \
-	echo "Waiting for bootstrap job to complete [ctx=$(CTX_STR)]"; \
-	if ! kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) wait --for=condition=complete job/maintainerd-bootstrap --timeout=600s; then \
-		echo "Bootstrap job failed or timed out. Recent logs:"; \
-		kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) logs job/maintainerd-bootstrap --tail=200 || true; \
-		exit 1; \
-	fi; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) logs job/maintainerd-bootstrap --tail=200; \
-	echo "Bootstrap job completed."; \
-	'
-
 .PHONY: migrate-schema
 migrate-schema:
 	@echo "Running schema migration job in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/maintainerd-migrate-schema-job.yaml
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/jobs/maintainerd-migrate-schema-job.yaml
 
 .PHONY: onboarding-backfill-job
 onboarding-backfill-job:
 	@echo "Running onboarding backfill job in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/maintainerd-onboarding-backfill-job.yaml
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/jobs/maintainerd-onboarding-backfill-job.yaml
 
 .PHONY: github-profile-sync-run
 github-profile-sync-run:
 	@bash -c 'set -euo pipefail; \
 	echo "Recreating GitHub profile sync job in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
 	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete job github-profile-sync --ignore-not-found; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/github-profile-sync-job.yaml; \
+	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/jobs/github-profile-sync-job.yaml; \
 	deadline=$$(( $$(date +%s) + 5400 )); \
 	wait_status=1; \
 	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
@@ -406,12 +348,12 @@ migrate-schema-safe:
 	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete job maintainerd-migrate-schema --ignore-not-found; \
 	if [ -n "$${node}" ]; then \
 		echo "Running schema migration job pinned to node $${node} [ctx=$(CTX_STR)]"; \
-		kubectl create -f deploy/manifests/maintainerd-migrate-schema-job.yaml --dry-run=client -o json | \
+		kubectl create -f deploy/jobs/maintainerd-migrate-schema-job.yaml --dry-run=client -o json | \
 		kubectl patch --local -f - -p "{\"spec\":{\"template\":{\"spec\":{\"nodeName\":\"$${node}\"}}}}" -o json | \
 		kubectl apply -f -; \
 	else \
 		echo "No attachment node found; running migration job without pinning [ctx=$(CTX_STR)]"; \
-		kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/maintainerd-migrate-schema-job.yaml; \
+		kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/jobs/maintainerd-migrate-schema-job.yaml; \
 	fi; \
 	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) wait --for=condition=complete job/maintainerd-migrate-schema --timeout=300s; \
 	echo "Scaling Deployment/maintainerd back to 1 [ctx=$(CTX_STR)]"; \
@@ -436,7 +378,6 @@ ESLINT_MAX_WARNINGS ?= 999
 
 # Secret names (keep these stable across clusters)
 ENV_SECRET_NAME   ?= maintainerd-bootstrap-env
-CREDS_SECRET_NAME ?= workspace-credentials
 WEB_ENV_SECRET_NAME ?= maintainerd-web-env
 WEB_BFF_ENV_SECRET_NAME ?= maintainerd-web-bff-env
 WEB_ENV_TEMPLATE ?= deploy/templates/maintainerd-web-env.yaml.tmpl
@@ -445,10 +386,6 @@ SOPS_CMD ?= sops
 SOPS_AGE_KEY ?=
 SOPS_AGE_KEY_FILE ?=
 SOPS_EXPECTED_AGE ?= $(shell age-keygen -y $(HOME)/.config/sops/age/keys.txt 2>/dev/null || true)
-
-# Path to the JSON creds file on your machine
-CREDS_FILE ?= ./cmd/bootstrap/credentials.json
-CREDS_KEY  ?= credentials.json
 
 # ---- Helpers ----
 .PHONY: help
@@ -464,10 +401,9 @@ help:
 	@echo ""
 	@echo "== Deployment =="
 	@echo "Image tags: <branch>-<shortsha>-<DAY-MON-DD-YYYY> (UTC), plus latest"
-	@echo "make secrets         -> dev-only: build $(ENVOUT) from $(ENVSRC) and apply both Secrets"
+	@echo "make secrets         -> dev-only: build $(ENVOUT) from $(ENVSRC) and apply $(ENV_SECRET_NAME)"
 	@echo "make env             -> dev-only: build $(ENVOUT) from $(ENVSRC)"
 	@echo "make apply-env       -> dev-only: create/update $(ENV_SECRET_NAME) from $(ENVOUT)"
-	@echo "make apply-creds     -> create/update $(CREDS_SECRET_NAME) from $(CREDS_FILE)"
 	@echo "make apply-web-env   -> create/update $(WEB_ENV_SECRET_NAME) from $(WEB_ENV_TEMPLATE)"
 	@echo "make apply-web-bff-env -> create/update $(WEB_BFF_ENV_SECRET_NAME) from $(WEB_BFF_ENV_TEMPLATE)"
 	@echo "make web-secrets     -> apply both web secrets from templates"
@@ -500,8 +436,6 @@ help:
 	@echo "make dot-project-sync-run -> trigger a manual dot-project sync job"
 	@echo "make fossa-poller-deploy -> apply Deployment for the long-running FOSSA poller"
 	@echo "make github-profile-sync-run -> recreate one-off GitHub profile sync job and tail logs"
-	@echo "make bootstrap-run   -> prod: recreate bootstrap job after applying SOPS bootstrap secrets"
-	@echo "make bootstrap-run-dev -> dev: recreate bootstrap job after applying .envrc secrets"
 	@echo "make migrate-schema  -> run one-off schema migration job"
 	@echo "make migrate-schema-safe -> scale down, run migration pinned to attached node, scale back up"
 	@echo "make ensure-ns       -> ensure namespace $(NAMESPACE) exists"
@@ -831,16 +765,6 @@ apply-env: $(ENVOUT)
 		$(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
 		--dry-run=client -o yaml | kubectl -n $(NAMESPACE) apply -f -
 
-# Apply the Secret that contains the credentials file
-.PHONY: apply-creds
-apply-creds:
-	@[ -f "$(CREDS_FILE)" ] || (echo "Missing $(CREDS_FILE). Set CREDS_FILE=... or place the file."; exit 1)
-	@echo "Applying secret $(CREDS_SECRET_NAME) in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) create secret generic $(CREDS_SECRET_NAME) \
-		--from-file=$(CREDS_KEY)=$(CREDS_FILE) \
-		$(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		--dry-run=client -o yaml | kubectl -n $(NAMESPACE) apply -f -
-
 # Apply the web env Secret from the template (env vars are substituted)
 .PHONY: apply-web-env
 apply-web-env:
@@ -1115,15 +1039,6 @@ dot-project-sync-image-set:
 	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
 		set image cronjob/dot-project-sync '*=$(DOT_PROJECT_SYNC_IMAGE)'
 
-.PHONY: sanitize-image-set
-sanitize-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make sanitize-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd-sanitize image to $(SANITIZE_IMAGE) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image cronjob/maintainer-sanitize '*=$(SANITIZE_IMAGE)'
-
 .PHONY: onboarding-backfill-image-set
 onboarding-backfill-image-set:
 	@if [ -z "$(TAG)" ]; then \
@@ -1134,13 +1049,13 @@ onboarding-backfill-image-set:
 		set image cronjob/maintainerd-onboarding-backfill '*=$(ONBOARDING_BACKFILL_IMAGE)'
 
 .PHONY: image-set
-image-set: mntrd-image-set web-image-set web-bff-image-set fossa-poller-image-set dot-project-sync-image-set sanitize-image-set onboarding-backfill-image-set
+image-set: mntrd-image-set web-image-set web-bff-image-set fossa-poller-image-set dot-project-sync-image-set onboarding-backfill-image-set
 	@true
 
 # Convenience combo target
 .PHONY: secrets
-secrets: env apply-env apply-creds
-	@echo "Secrets applied: $(ENV_SECRET_NAME), $(CREDS_SECRET_NAME) [ns=$(NAMESPACE)]"
+secrets: env apply-env
+	@echo "Secret applied: $(ENV_SECRET_NAME) [ns=$(NAMESPACE)]"
 
 # Show which keys would be loaded (without values)
 .PHONY: print
@@ -1153,7 +1068,6 @@ images-show:
 	@echo "Image repositories:"
 	@echo "  maintainerd        $(IMAGE)"
 	@echo "  maintainerd-dot-project-sync $(DOT_PROJECT_SYNC_IMAGE)"
-	@echo "  maintainerd-sanitize $(SANITIZE_IMAGE)"
 	@echo "  maintainerd-migrate  $(MIGRATE_IMAGE)"
 	@echo "  maintainerd-fossa-poller $(FOSSA_POLLER_IMAGE)"
 	@echo "  maintainerd-github-profile-sync $(GITHUB_PROFILE_SYNC_IMAGE)"
@@ -1161,7 +1075,7 @@ images-show:
 	@echo "  maintainerd-web-bff  $(WEB_BFF_IMAGE)"
 
 .PHONY: images-build
-images-build: mntrd-image-build dot-project-sync-image-build sanitize-image-build migrate-image-build onboarding-backfill-image-build fossa-poller-image-build github-profile-sync-image-build web-image-build web-bff-image-build
+images-build: mntrd-image-build dot-project-sync-image-build migrate-image-build onboarding-backfill-image-build fossa-poller-image-build github-profile-sync-image-build web-image-build web-bff-image-build
 	@echo "All images built."
 
 .PHONY: mntrd-image-push-only
@@ -1193,21 +1107,6 @@ dot-project-sync-image-push-only:
 	@echo "Tagging and pushing latest: $(DOT_PROJECT_SYNC_IMAGE_LATEST)"
 	@$(CONTAINER_TOOL) tag $(DOT_PROJECT_SYNC_IMAGE) $(DOT_PROJECT_SYNC_IMAGE_LATEST)
 	@$(CONTAINER_TOOL) push $(DOT_PROJECT_SYNC_IMAGE_LATEST)
-
-.PHONY: sanitize-image-push-only
-sanitize-image-push-only:
-	@echo "Ensuring $(CONTAINER_TOOL) is logged in to $(REGISTRY) (uses GHCR_TOKEN if set)"
-	@if [ -n "$(GHCR_TOKEN)" ]; then \
-		echo "Logging into $(REGISTRY) as $(GHCR_USER) using token from GHCR_TOKEN"; \
-		echo "$(GHCR_TOKEN)" | $(CONTAINER_TOOL) login $(REGISTRY) -u "$(GHCR_USER)" --password-stdin; \
-	else \
-		echo "GHCR_TOKEN not set; attempting push with existing auth"; \
-	fi
-	@echo "Pushing image: $(SANITIZE_IMAGE)"
-	@$(CONTAINER_TOOL) push $(SANITIZE_IMAGE)
-	@echo "Tagging and pushing latest: $(SANITIZE_IMAGE_LATEST)"
-	@$(CONTAINER_TOOL) tag $(SANITIZE_IMAGE) $(SANITIZE_IMAGE_LATEST)
-	@$(CONTAINER_TOOL) push $(SANITIZE_IMAGE_LATEST)
 
 .PHONY: migrate-image-push-only
 migrate-image-push-only:
@@ -1300,7 +1199,7 @@ web-bff-image-push-only:
 	@$(CONTAINER_TOOL) push $(WEB_BFF_IMAGE_LATEST)
 
 .PHONY: images-push
-images-push: mntrd-image-push-only dot-project-sync-image-push-only sanitize-image-push-only migrate-image-push-only onboarding-backfill-image-push-only fossa-poller-image-push-only github-profile-sync-image-push-only web-image-push-only web-bff-image-push-only
+images-push: mntrd-image-push-only dot-project-sync-image-push-only migrate-image-push-only onboarding-backfill-image-push-only fossa-poller-image-push-only github-profile-sync-image-push-only web-image-push-only web-bff-image-push-only
 	@echo "All images pushed (no build)."
 
 .PHONY: clean-env

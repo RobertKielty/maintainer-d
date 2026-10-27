@@ -27,9 +27,11 @@ FLUX-CD.MD
 
 ## Revised plan (2026-08-25)
 
+> **Phase 0 cleanup (2026-10-27, see #148):** one-shot Jobs moved out of `deploy/manifests/` into `deploy/jobs/`, so `deploy/manifests/` now contains only resources that are safe to reconcile continuously and the base Kustomization can point at the whole directory. The worksheet `bootstrap` Job (and its code) and the `maintainer-sanitize` CronJob were removed. The two `ingress-nginx*.yaml` files, which were captures of live Pod objects rather than manifests, were deleted.
+
 The manifest set has grown significantly since this doc was first drafted — `cronjob-fossa-poller.yaml` no longer exists (fossa-poller is now a `Deployment`, not a `CronJob`), and several Jobs, CronJobs, ingress/cert-manager resources, and RBAC were added. The revised base below reflects `deploy/manifests/` as it exists today, split into what Flux should continuously reconcile vs. what stays manual.
 
-`deploy/manifests/cronjob.yaml` (`CronJob/maintainer-sync`) was removed 2026-08-26 along with the dead `maintainer-d.cncf.io` CRD machinery it populated (kcp-experiment leftover, never read by anything). `deploy/manifests/sync-rbac.yaml` now defines only `ServiceAccount/maintainer-sync`, kept because `CronJob/maintainer-sanitize` and `Deployment/maintainerd-fossa-poller` still mount it.
+`deploy/manifests/cronjob.yaml` (`CronJob/maintainer-sync`) was removed 2026-08-26 along with the dead `maintainer-d.cncf.io` CRD machinery it populated (kcp-experiment leftover, never read by anything). `deploy/manifests/sync-rbac.yaml` now defines only `ServiceAccount/maintainer-sync`, kept because `Deployment/maintainerd-fossa-poller` and the one-shot Jobs in `deploy/jobs/` still mount it.
 
 ### Base Kustomize (deploy/kustomize/base/kustomization.yaml)
 
@@ -54,17 +56,16 @@ resources:
   - ../../manifests/certificate-github-events.yaml
   - ../../manifests/clusterissuer-letsencrypt-http.yaml
   # RBAC (ServiceAccount only — maintainer-sync CronJob it was built for is gone;
-  # SA retained because maintainer-sanitize and maintainerd-fossa-poller mount it)
+  # SA retained because maintainerd-fossa-poller and deploy/jobs/ mount it)
   - ../../manifests/sync-rbac.yaml
   # Recurring CronJobs (self-healing scheduled work, safe to reconcile)
-  - ../../manifests/cronjob-sanitize.yaml
   - ../../manifests/dot-project-sync-cronjob.yaml
   - ../../manifests/github-profile-sync-cronjob.yaml
 ```
 
 ### Excluded from Flux entirely
 
-**`ingress-nginx.yaml` / `ingress-nginx-controller.yaml`** — these are the full upstream ingress-nginx controller bundle (many resources, third-party infra), not app manifests. They shouldn't be owned/pruned by this repo's app-level `Kustomization`; if they're ever brought under GitOps it should be a separate Flux `Kustomization`/`HelmRelease` dedicated to cluster infra.
+**ingress-nginx** — third-party cluster infra, installed with `kubectl apply` of the upstream v1.13.2 static manifest (see `OPS.MD`). The former `ingress-nginx*.yaml` files in this repo were Pod captures and have been deleted. If the controller is ever brought under GitOps it should be a separate Flux `Kustomization`/`HelmRelease` dedicated to cluster infra.
 
 ### Job-exclusion approach
 
@@ -73,9 +74,8 @@ A Kubernetes `Job` spec is immutable once created and designed to run once to co
 - if the Job still exists when Flux reconciles, `kubectl apply` on an immutable Job spec **errors** (fields like `spec.template` can't change on an existing Job) — reported as an unhealthy `Kustomization` even though nothing's actually wrong; or
 - if the Job is deleted after completion (normal cleanup), Flux's next reconcile just **recreates and re-runs it** — silently re-running a migration/backfill/add-staff job on every reconcile interval, which is actively dangerous for anything not idempotent.
 
-So the following stay **outside** the Flux base and keep being triggered by hand, exactly as today:
+So the following stay **outside** the Flux base, in `deploy/jobs/`, and keep being triggered by hand:
 
-- `bootstrap-job.yaml`
 - `github-profile-sync-job.yaml`
 - `maintainerd-add-staff-job.yaml`
 - `maintainerd-migrate-schema-job.yaml`
@@ -84,7 +84,7 @@ So the following stay **outside** the Flux base and keep being triggered by hand
 - `maintainerd-invite-team-assignment-job.yaml` (ConfigMap + Job)
 
 ```bash
-kubectl -n maintainerd --context context-cdv2c4jfn5q apply -f deploy/manifests/maintainerd-migrate-schema-job.yaml
+kubectl -n maintainerd --context context-cdv2c4jfn5q apply -f deploy/jobs/maintainerd-migrate-schema-job.yaml
 kubectl -n maintainerd --context context-cdv2c4jfn5q delete job maintainerd-migrate-schema  # cleanup before next run
 ```
 
@@ -92,8 +92,8 @@ If Flux-managed one-shot Jobs are wanted later, the supported patterns are a `Ku
 
 ### Net effect of the first cut
 
-- Flux would own: 4 Deployments, 3 Services, ingress + cert-manager app resources, RBAC, 4 recurring CronJobs.
-- Manual `kubectl apply` keeps owning: 7 one-shot Jobs.
+- Flux would own: everything in `deploy/manifests/`, which is 4 Deployments, 3 Services, ingress + cert-manager app resources, RBAC and 2 recurring CronJobs.
+- Manual `kubectl apply` keeps owning: the 6 one-shot Jobs in `deploy/jobs/`.
 
 ### Open decision: image tag strategy
 

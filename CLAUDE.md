@@ -89,9 +89,11 @@ Use the "Friends episode nameing method": write commit messages as if prefixed w
 Kubernetes manifests are in `deploy/manifests/` (no Helm). See `OPS.MD` for operational commands.
 
 ```bash
-make secrets           # build bootstrap.env and apply required Secrets
+make secrets           # dev-only: build bootstrap.env and apply maintainerd-bootstrap-env
 make manifests-apply   # apply all manifests to cluster
 make manifests-delete  # delete manifests from cluster
 ```
 
-Required secrets in namespace `maintainerd`: `maintainerd-bootstrap-env`, `workspace-credentials`, `ghcr-secret`.
+Required secrets in namespace `maintainerd`: `ghcr-secret` plus the per-workload env secrets (`maintainerd-server-env`, `maintainerd-db-env`, `maintainerd-web-env`, `maintainerd-web-bff-env`).
+
+`deploy/manifests/` holds only long-lived resources and is safe to re-apply. One-shot Jobs (schema migration, backfills, add-staff) live in `deploy/jobs/` and are applied individually, never wholesale.

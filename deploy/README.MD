@@ -19,13 +19,10 @@ graph RL
             end
         end
 
-        job["Job: maintainerd-bootstrap<br/>Seeds data from CNCF Google Sheet"]
         pg[(Managed Postgres)]
         svc{{Service<br/>maintainerd-service<br/>type=LoadBalancer}}
         svc -->|"ports 80/443"| ext[(External LB IP<br/>github-events.cncf.io/webhook)]
     end
-
-    job -->|"SQL INSERTs into PROJECT and MAINTAINERS tables"| pg
 ```
 
 
@@ -35,7 +32,6 @@ graph RL
     deploy -->|imagePullSecrets| ghcr
     pod -->|exposes 2525| svc
     svc -->|TLS| tls
-    job -->|envFrom| secrets
 
 
 
@@ -163,10 +159,10 @@ TEXT name
 
 
 
-## bootstrap job
- - bootstrap process loads project and maintainer data into Postgres from 
-   - a CNCF-Internal worksheet 
-   - in future, should be loaded from a combination of PCC user profiles (keyed by GitHub user account) and a registered list of project.yaml files on a per-project basis. 
+## Manifest layout
+ - `deploy/manifests/` holds only long-lived resources (Deployments, Services, Ingresses, CronJobs, cert-manager objects, the ServiceAccount). `make manifests-apply` applies the whole directory and is safe to re-run.
+ - `deploy/jobs/` holds one-shot Jobs (schema migration, backfills, add-staff, profile sync). Apply them one file at a time, on purpose. See `deploy/jobs/README.md`.
+ - The Google-worksheet `bootstrap` Job was retired. A possible replacement that discovers `.project` repos across the CNCF org is tracked in #181.
 
 ## GitHub Event Listener
 

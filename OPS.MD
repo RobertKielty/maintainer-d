@@ -2,39 +2,6 @@
 
 This guide is organized by outcomes. Use it as a checklist when operating maintainer-d in production or development.
 
-## Import data from the legacy worksheet (bootstrap)
-
-Goal: Load or refresh projects/maintainers from the Google worksheet into Postgres.
-
-Production (SOPS secrets):
-1) Ensure required secrets are applied:
-```
-make sops-apply-bootstrap-secrets
-make apply-creds
-```
-
-2) Run the bootstrap job:
-```
-make bootstrap-run
-```
-
-Development (local .envrc):
-1) Generate and apply the dev bootstrap secret:
-```
-make env
-make apply-env
-```
-
-2) Run the bootstrap job:
-```
-make bootstrap-run-dev
-```
-
-Notes:
-- `maintainerd-bootstrap-env` must include `MD_WORKSHEET`, `FOSSA_API_TOKEN`, and `WORKSPACE_CREDENTIALS_FILE` (internal worksheet credentials).
-- `maintainerd-db-env` must include `MD_DB_DRIVER=postgres` and `MD_DB_DSN=...` for production.
-- Database extensions required by the schema (e.g., `unaccent`, `pg_trgm`) must be available in the Postgres image and created before restore/migrations. Update local DB scripts in `scripts/` if requirements change.
-
 ## Deploy the maintainerd server
 
 Goal: Deploy the API server and supporting resources.
@@ -44,14 +11,13 @@ Goal: Deploy the API server and supporting resources.
 make ensure-ns
 make apply-ghcr-secret
 make sops-apply-web-secrets
-make sops-apply-bootstrap-secrets
-make apply-creds
 ```
 
 2) Apply Kubernetes manifests:
 ```
 make manifests-apply
 ```
+`deploy/manifests/` contains only long-lived resources, so re-applying it is safe. One-shot Jobs live in `deploy/jobs/` and are never applied by `manifests-apply` (see "Run a one-shot job" below).
 
 3) Verify:
 ```
@@ -70,7 +36,7 @@ make migrate-image-push
 
 2) Apply the migrate job manifest:
 ```
-kubectl -n maintainerd apply -f deploy/manifests/maintainerd-migrate-schema-job.yaml
+kubectl -n maintainerd apply -f deploy/jobs/maintainerd-migrate-schema-job.yaml
 ```
 
 3) Wait for completion:
@@ -88,6 +54,23 @@ kubectl -n maintainerd logs job/maintainerd-migrate-schema
 kubectl -n maintainerd delete job/maintainerd-migrate-schema
 ```
 
+## Run a one-shot job
+
+Goal: Run a migration, backfill or other one-off task without touching the long-lived resources.
+
+One-shot Jobs live in `deploy/jobs/`. Apply exactly one file, on purpose; never apply the directory wholesale. A Job's spec is immutable, so delete any previous run first:
+```
+kubectl -n maintainerd delete job <job-name> --ignore-not-found
+kubectl -n maintainerd apply -f deploy/jobs/<file>.yaml
+kubectl -n maintainerd logs -f job/<job-name>
+```
+
+Makefile shortcuts exist for some of them: `make migrate-schema`, `make onboarding-backfill-job`, `make github-profile-sync-run`.
+
+## Ingress controller
+
+ingress-nginx runs in the `ingress-nginx` namespace as `Deployment/ingress-nginx-controller` (v1.13.2). It was installed with `kubectl apply` of the upstream static deploy manifest, not Helm, and is not managed from this repo.
+
 ## Take a copy of the data in the database
 
 Goal: Export a snapshot of the production Postgres database.
@@ -100,21 +83,6 @@ kubectl -n maintainerd run pgdump --rm -i --restart=Never \
   --env="PGPASSWORD=$PGPASSWORD" -- \
   pg_dump "host=<db-host> port=5432 user=<db-user> dbname=maintainerd sslmode=require" \
   --format=custom --no-owner --no-privileges > maintainerd-prod.dump
-```
-
-## Deploy sanitize
-
-Goal: Run/enable the sanitize job that archives maintainers missing from project admin files.
-
-1) Build and push the image:
-```
-make sanitize-image-build
-make sanitize-image-push
-```
-
-2) Apply or update the CronJob manifest:
-```
-kubectl -n maintainerd apply -f deploy/manifests/cronjob-sanitize.yaml
 ```
 
 ## Deploy the web app for staff
@@ -143,11 +111,10 @@ make web-image-set TAG=<tag>
 
 ### Dev secrets (local .envrc)
 - `.envrc` is dev-only.
-- Generate and apply dev bootstrap secrets:
+- Generate and apply the dev env secret:
 ```
 make env
 make apply-env
-make apply-creds
 ```
 
 ### Production secrets (SOPS)
@@ -169,7 +136,6 @@ make sops-encrypt-bootstrap-secrets SOPS_AGE_KEY=age1...
 ```
 make sops-apply-web-secrets SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
 make sops-apply-bootstrap-secrets SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
-make apply-creds
 ```
 
 ## License

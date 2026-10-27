@@ -1,8 +1,8 @@
 # The maintainer-d.cncf.io CRD sync CronJob this ServiceAccount was built for
 # has been decommissioned (see git history), but the SA itself is retained:
-# it's also mounted by CronJob/maintainer-sanitize and Deployment/maintainerd-fossa-poller.
-# Neither of those workloads needs any RBAC grants (no Kubernetes client in
-# either binary) - they only need the identity to exist. Do not add a Role
+# it's also mounted by Deployment/maintainerd-fossa-poller and by the one-shot
+# Jobs in deploy/jobs/. None of those workloads needs any RBAC grants (no
+# Kubernetes client in any of the binaries) - they only need the identity to exist. Do not add a Role
 # back here without checking who else mounts this SA first.
 apiVersion: v1
 kind: ServiceAccount

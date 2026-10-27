@@ -59,7 +59,7 @@ linters:
           - errcheck
           - gosec
           - govet
-        path: (cmd/bootstrap|plugins/fossa/client)\.go
+        path: plugins/fossa/client\.go
     paths:
       - \.modcache/
       - \.gocache/

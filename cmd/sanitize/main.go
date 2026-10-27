@@ -26,9 +26,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// defaultIntervalSeconds mirrors the CronJob schedule in
-// deploy/manifests/cronjob-sanitize.yaml ("*/5 * * * *"). Override with
-// MD_SANITIZE_INTERVAL_SECONDS if that schedule ever changes.
+// defaultIntervalSeconds mirrors the "*/5 * * * *" schedule of the retired
+// maintainer-sanitize CronJob (see git history). Override with
+// MD_SANITIZE_INTERVAL_SECONDS if a redeployed schedule differs.
 const defaultIntervalSeconds = 300
 
 func main() {
