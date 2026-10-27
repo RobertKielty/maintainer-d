@@ -235,8 +235,13 @@ const activeMaintainerHandles = (maintainers: KnownMaintainer[]): KnownMaintaine
 
 const leadingWhitespaceLength = (line: string): number => line.match(/^\s*/)?.[0].length ?? 0;
 
-const isProjectMaintainersNameLine = (line: string): boolean =>
-  /^\s*(?:-\s*)?name:\s*["']?project-maintainers["']?\s*(?:#.*)?$/i.test(line);
+// Matches a `- name: <anything>` list item under a `teams:` sequence. It
+// used to require the literal name "project-maintainers" - upstream
+// (cncf/automation#602) dropped that requirement, so every team is now a
+// maintainer team regardless of its name. The patch-preview write path
+// still has to pick one team to patch into, so it targets whichever team
+// comes first in the file.
+const isMaintainerTeamNameLine = (line: string): boolean => /^\s*(?:-\s*)?name:\s*\S.*$/i.test(line);
 
 const isMembersLine = (line: string): boolean => /^\s*members:\s*(?:#.*)?$/i.test(line);
 
@@ -392,7 +397,7 @@ const buildMaintainerPatchPreview = (source: string, missingHandles: string[]): 
   }
 
   const originalLines = splitSourceLines(source);
-  const teamNameIndex = originalLines.findIndex(isProjectMaintainersNameLine);
+  const teamNameIndex = originalLines.findIndex(isMaintainerTeamNameLine);
 
   if (teamNameIndex < 0) {
     return {
@@ -400,7 +405,7 @@ const buildMaintainerPatchPreview = (source: string, missingHandles: string[]): 
       proposed: [],
       addedCount: 0,
       deletedCount: 0,
-      error: "Cannot generate a patch preview because the project-maintainers team was not found.",
+      error: "Cannot generate a patch preview because no maintainer team was found.",
     };
   }
 
@@ -518,17 +523,26 @@ export default function DotProjectMaintainerFileViewer({
     }
     return known;
   }, [activeMaintainers]);
-  const projectMaintainerTeam = parsed.teams.find((team) => normalizeHandle(team.name) === "project-maintainers");
-  const projectMaintainerHandles = useMemo(
-    () => new Set((projectMaintainerTeam?.members ?? []).map(normalizeHandle).filter(Boolean)),
-    [projectMaintainerTeam],
+  // Every team in the file is a maintainer team - upstream (cncf/automation#602)
+  // dropped the requirement that this be a team literally named
+  // "project-maintainers". maintainer-d does not yet read upstream's
+  // `managed` flag (see maintainer-d#173/#172), so as an interim rule every
+  // team's members count, matching upstream's default for files that never
+  // set `managed` at all.
+  const allTeamMembers = useMemo(
+    () => parsed.teams.flatMap((team) => team.members),
+    [parsed.teams],
+  );
+  const maintainerTeamHandles = useMemo(
+    () => new Set(allTeamMembers.map(normalizeHandle).filter(Boolean)),
+    [allTeamMembers],
   );
   const memberCount = parsed.teams.reduce((total, team) => total + team.members.length, 0);
-  const missingProjectMaintainers = (projectMaintainerTeam?.members ?? []).filter(
+  const missingProjectMaintainers = allTeamMembers.filter(
     (member) => !activeMaintainersByHandle.has(normalizeHandle(member)),
   );
   const missingFileMaintainers = activeMaintainers.filter(
-    (maintainer) => !projectMaintainerHandles.has(normalizeHandle(maintainer.github)),
+    (maintainer) => !maintainerTeamHandles.has(normalizeHandle(maintainer.github)),
   );
   const patchPreview = useMemo(
     () => buildMaintainerPatchPreview(source, missingFileMaintainers.map((maintainer) => maintainer.github)),
@@ -558,7 +572,7 @@ export default function DotProjectMaintainerFileViewer({
   };
 
   const renderYamlLine = (line: string, keyPrefix: string) => {
-    const tokens = tokenizeYamlLine(line, projectMaintainerHandles);
+    const tokens = tokenizeYamlLine(line, maintainerTeamHandles);
     return tokens.length > 0
       ? tokens.map((token, tokenIndex) =>
           token.maintainerHandle ? (
@@ -618,14 +632,14 @@ export default function DotProjectMaintainerFileViewer({
           YAML parse issue: <strong>{parsed.errors[0]}</strong>
         </div>
       ) : null}
-      {parsed.errors.length === 0 && !projectMaintainerTeam ? (
+      {parsed.errors.length === 0 && parsed.teams.length === 0 ? (
         <div className={styles.dotProjectYamlParseError}>
-          Validation issue: <strong>project-maintainers</strong> team was not found in the cached maintainer file.
+          Validation issue: no maintainer teams were found in the cached maintainer file.
         </div>
       ) : null}
       {missingProjectMaintainers.length > 0 ? (
         <div className={styles.dotProjectYamlValidation}>
-          {missingProjectMaintainers.length} project-maintainers handle
+          {missingProjectMaintainers.length} maintainer handle
           {missingProjectMaintainers.length === 1 ? " is" : "s are"} not active in maintainer-d.
         </div>
       ) : null}
@@ -635,8 +649,8 @@ export default function DotProjectMaintainerFileViewer({
             <h5 className={styles.dotProjectDiffSummaryTitle}>DB-vs-file diff</h5>
             <p className={styles.dotProjectDiffSummaryBody}>
               {missingFileMaintainers.length} active maintainer-d maintainer
-              {missingFileMaintainers.length === 1 ? " is" : "s are"} missing from the{" "}
-              <strong>project-maintainers</strong> team in <code>{filename}</code>:
+              {missingFileMaintainers.length === 1 ? " is" : "s are"} missing from the maintainer teams in{" "}
+              <code>{filename}</code>:
             </p>
             <div className={styles.dotProjectDiffMaintainerList}>
               {missingFileMaintainers.map((maintainer) => (
@@ -658,9 +672,9 @@ export default function DotProjectMaintainerFileViewer({
             {showPatchPreview ? "Hide PR Preview" : "Show PR Preview"}
           </button>
         </div>
-      ) : projectMaintainerTeam ? (
+      ) : parsed.teams.length > 0 ? (
         <div className={styles.dotProjectYamlSuccess}>
-          All active maintainer-d maintainers are present in the project-maintainers team.
+          All active maintainer-d maintainers are present in the maintainer teams.
         </div>
       ) : null}
 
@@ -675,9 +689,7 @@ export default function DotProjectMaintainerFileViewer({
               <div className={styles.dotProjectMemberList}>
                 {team.members.map((member) => (
                   <span className={styles.dotProjectMemberChip} key={`${team.name}-${member}`}>
-                    {normalizeHandle(team.name) === "project-maintainers"
-                      ? renderMaintainerHandle(member, `- ${member}`)
-                      : member}
+                    {renderMaintainerHandle(member, `- ${member}`)}
                   </span>
                 ))}
               </div>

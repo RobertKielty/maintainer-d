@@ -62,7 +62,7 @@ func TestGenerateMaintainersRosterYAMLPopulatesActiveHandles(t *testing.T) {
 
 	assert.Equal(t, `maintainers:
   - teams:
-      - name: "project-maintainers"
+      - name: "maintainers"
         members:
           - bob
           - alice
@@ -74,7 +74,7 @@ func TestGenerateMaintainersRosterYAMLAddsPlaceholderWhenNoActiveHandles(t *test
 
 	assert.Equal(t, `maintainers:
   - teams:
-      - name: "project-maintainers"
+      - name: "maintainers"
         members:
           # TODO: Add maintainer GitHub handles
           - github-handle

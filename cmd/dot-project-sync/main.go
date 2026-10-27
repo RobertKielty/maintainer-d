@@ -205,8 +205,8 @@ func main() {
 func parseFlags() syncConfig {
 	cfg := syncConfig{}
 	cfg.Actor = strings.TrimSpace(os.Getenv("DOT_PROJECT_SYNC_ACTOR"))
-	flag.BoolVar(&cfg.CheckFoundationCSV, "check-foundation-csv", true, "require cncf/foundation project-maintainers.csv membership before auto-adding dot-project maintainers")
-	flag.BoolVar(&cfg.AutoAddMaintainers, "auto-add-maintainers", false, "write eligible dot-project maintainers to maintainers and maintainer_projects")
+	flag.BoolVar(&cfg.CheckFoundationCSV, "check-foundation-csv", false, "require cncf/foundation project-maintainers.csv membership before auto-adding dot-project maintainers")
+	flag.BoolVar(&cfg.AutoAddMaintainers, "auto-add-maintainers", true, "write eligible dot-project maintainers to maintainers and maintainer_projects")
 	flag.StringVar(&cfg.FoundationOwner, "foundation-csv-owner", "cncf", "GitHub owner for foundation project-maintainers.csv")
 	flag.StringVar(&cfg.FoundationRepo, "foundation-csv-repo", "foundation", "GitHub repository for foundation project-maintainers.csv")
 	flag.StringVar(&cfg.FoundationRef, "foundation-csv-ref", "main", "Git ref for foundation project-maintainers.csv")
@@ -303,6 +303,7 @@ func buildAutoAdder(store *db.SQLStore, cfg syncConfig, foundation *dotproject.F
 		Store:              store,
 		Foundation:         foundation,
 		LFX:                lfxResolver,
+		GitHubProfiles:     &dotproject.GitHubUserProfileClient{Client: githubClient},
 		Provenance:         provenance.NewResolver(githubClient),
 		Actor:              cfg.Actor,
 		CheckFoundationCSV: cfg.CheckFoundationCSV,

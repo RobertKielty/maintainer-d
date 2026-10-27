@@ -58,14 +58,14 @@ Then("the dot-project roll call does not show a generate MAINTAINERS.yaml panel"
 Then("the generated MAINTAINERS.yaml lists the project's active maintainers", async function () {
   const contentColumn = this.page.locator('[class*="contentColumn"]');
   const generatedBlock = contentColumn.locator('[class*="dotProjectGeneratedYamlBlock"]');
-  await expect(generatedBlock).toContainText('name: "project-maintainers"');
+  await expect(generatedBlock).toContainText('name: "maintainers"');
   await expect(generatedBlock).toContainText("antonio-example");
   await expect(generatedBlock).toContainText("diego-placeholder");
 });
 
 Then("the system clipboard contains the generated MAINTAINERS.yaml", async function () {
   const clipboardText = await this.page.evaluate(() => navigator.clipboard.readText());
-  expect(clipboardText).toContain('name: "project-maintainers"');
+  expect(clipboardText).toContain('name: "maintainers"');
   expect(clipboardText).toContain("antonio-example");
   expect(clipboardText).toContain("diego-placeholder");
 });

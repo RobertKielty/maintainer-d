@@ -161,7 +161,7 @@ func main() {
 			DotProjectContributingRef: "https://github.com/project-atlas/.project/blob/main/CONTRIBUTING.md",
 			DotProjectGovernanceRef:   "https://github.com/project-atlas/.project/blob/main/GOVERNANCE.md",
 			DotProjectSchemaVersion:   "1.0.0",
-			DotProjectMaintainerCount: uintPtr(3),
+			DotProjectMaintainerCount: uintPtr(7),
 			DotProjectLastSyncedAt:    atlasSyncedAt,
 			DotProjectAdoptionStatus:  "adopted",
 		},
@@ -242,14 +242,35 @@ func main() {
 		GovernanceFileETag:      "seed-governance",
 		ProjectFileBodyHash:     "seed-project-hash",
 		MaintainersFileBodyHash: "seed-maintainers-hash",
+		// Projects now organize maintainers.yaml teams however they see fit
+		// (cncf/automation#602), so the fixture mixes the legacy
+		// "project-maintainers" name with upstream's "maintainers" scaffold
+		// name and other team names, including emeritus/community teams. Until
+		// maintainer-d#172 models upstream's `managed` flag, every team here is
+		// treated as a maintainer team.
 		MaintainersFileBody: strPtr(`# Project Atlas dot-project maintainers
 maintainers:
   - teams:
       - name: project-maintainers
         members:
           - antonio-example
-          - renee-sample
           - unmapped-dotproject
+      - name: maintainers
+        members:
+          - renee-sample
+      - name: release-team
+        members:
+          - atlas-release-lead
+  - teams:
+      - name: emeritus
+        members:
+          - atlas-emeritus
+      - name: emeritus-maintainers
+        members:
+          - atlas-emeritus-maintainer
+      - name: community
+        members:
+          - atlas-community-member
 `),
 		SecurityFileBodyHash:     "seed-security-hash",
 		ContributingFileBodyHash: "seed-contributing-hash",

@@ -298,18 +298,28 @@ func ParseMaintainerHandles(body string) ([]string, ParseStatus, string) {
 	return result, ParseStatusParsed, ""
 }
 
-// MaintainerEntry is a single project-maintainers team member together with
-// the 1-based line it appears on in the source YAML, so a caller can build
-// a commit-pinned permalink to the exact line that granted maintainer
-// status.
+// MaintainerEntry is a single maintainer team member together with the
+// 1-based line it appears on in the source YAML, so a caller can build a
+// commit-pinned permalink to the exact line that granted maintainer status,
+// and the name of the team that granted it.
 type MaintainerEntry struct {
-	Handle string
-	Line   int
+	Handle   string
+	Line     int
+	TeamName string
 }
 
-// ParseProjectMaintainerEntries parses the project-maintainers team members
-// out of a maintainers.yaml body using yaml.Node decoding, which preserves
-// line numbers that a typed yaml.Unmarshal would discard.
+// ParseProjectMaintainerEntries parses maintainer team members out of a
+// maintainers.yaml body using yaml.Node decoding, which preserves line
+// numbers that a typed yaml.Unmarshal would discard.
+//
+// Every team is treated as a maintainer team, regardless of its name.
+// Upstream (cncf/automation#602) dropped the requirement that this team be
+// named exactly "project-maintainers": a team is now included by the
+// absence of a `managed: false` flag, not by its name. This function does
+// not yet read that flag (see maintainer-d#173/#172) - as an interim rule
+// it treats every team as managed, which matches upstream's default for the
+// common case of a file that never sets `managed` at all. Once `managed` is
+// modeled, unmanaged teams should be excluded here instead of counted.
 func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus, string) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(body), &doc); err != nil {
@@ -326,8 +336,7 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 	}
 
 	seen := make(map[string]MaintainerEntry)
-	teamFound := false
-	var otherTeamNames []string
+	teamsSeen := 0
 	for _, maintainerGroup := range maintainersNode.Content {
 		maintainerGroup = resolveAlias(maintainerGroup)
 		teamsNode := resolveAlias(mappingValue(maintainerGroup, "teams"))
@@ -336,22 +345,11 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 		}
 		for _, team := range teamsNode.Content {
 			team = resolveAlias(team)
-			nameNode := mappingValue(team, "name")
-			if nameNode == nil {
-				continue
+			teamsSeen++
+			teamName := ""
+			if nameNode := resolveAlias(mappingValue(team, "name")); nameNode != nil && nameNode.Kind == yaml.ScalarNode {
+				teamName = nameNode.Value
 			}
-			teamName := strings.TrimSpace(nameNode.Value)
-			if !strings.EqualFold(teamName, "project-maintainers") {
-				// Recorded only to make the exact-hyphenated-slug filter's
-				// false-negative rate measurable (see the PR-reviewed
-				// provenance plan section 6) - the match itself is
-				// deliberately left exact, not widened here.
-				if strings.Contains(strings.ToLower(teamName), "maintainer") {
-					otherTeamNames = append(otherTeamNames, teamName)
-				}
-				continue
-			}
-			teamFound = true
 			membersNode := resolveAlias(mappingValue(team, "members"))
 			if membersNode == nil || membersNode.Kind != yaml.SequenceNode {
 				continue
@@ -367,7 +365,7 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 				// handles instead of being rejected.
 				if member.Kind != yaml.ScalarNode || member.ShortTag() != "!!str" {
 					return nil, ParseStatusInvalidShape, fmt.Sprintf(
-						"project-maintainers member at line %d is not a plain string", member.Line)
+						"maintainer team member at line %d is not a plain string", member.Line)
 				}
 				normalized := normalizeHandle(member.Value)
 				if normalized == "" {
@@ -376,20 +374,15 @@ func ParseProjectMaintainerEntries(body string) ([]MaintainerEntry, ParseStatus,
 				if _, exists := seen[normalized]; exists {
 					continue
 				}
-				seen[normalized] = MaintainerEntry{Handle: normalized, Line: member.Line}
+				seen[normalized] = MaintainerEntry{Handle: normalized, Line: member.Line, TeamName: teamName}
 			}
 		}
 	}
 	if len(seen) == 0 {
-		if !teamFound {
-			if len(otherTeamNames) > 0 {
-				return nil, ParseStatusInvalidShape, fmt.Sprintf(
-					"no project-maintainers team found; saw maintainer-like team name(s) that did not match exactly: %s",
-					strings.Join(otherTeamNames, ", "))
-			}
-			return nil, ParseStatusInvalidShape, "no project-maintainers team found"
+		if teamsSeen == 0 {
+			return nil, ParseStatusInvalidShape, "no maintainer teams found"
 		}
-		return nil, ParseStatusInvalidShape, "project-maintainers team has no members"
+		return nil, ParseStatusInvalidShape, "maintainer teams have no members"
 	}
 
 	result := make([]MaintainerEntry, 0, len(seen))
@@ -555,6 +548,32 @@ func (c *GitHubRepositoryClient) ListFiles(ctx context.Context, owner, repo, ref
 		files = append(files, ListedFile{Path: strings.TrimSpace(entry.GetPath())})
 	}
 	return files, nil
+}
+
+// GitHubUserProfileClient implements GitHubProfileResolver against the real
+// GitHub API.
+type GitHubUserProfileClient struct {
+	Client *github.Client
+}
+
+// GetMaintainerName returns the profile's "Name" field, or "" when the
+// profile has none set or the account is gone (404) - either way there is no
+// name to give, not an error worth failing a sync run over.
+func (c *GitHubUserProfileClient) GetMaintainerName(ctx context.Context, githubHandle string) (string, error) {
+	if c == nil || c.Client == nil {
+		return "", errors.New("github client is required")
+	}
+	user, resp, err := c.Client.Users.Get(ctx, githubHandle)
+	if err != nil {
+		if isGitHubNotFound(resp, err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if user == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(user.GetName()), nil
 }
 
 func isGitHubNotFound(resp *github.Response, err error) bool {

@@ -101,8 +101,9 @@ func main() {
 		rawLocation := ghUser.GetLocation()
 		previous := geo.ResolvedLocation{Location: m.Location, Country: m.Country, Timezone: m.Timezone}
 		resolved := geo.ResolveLocation(rawLocation, previous)
+		resolvedName := resolveMaintainerName(m.Name, ghUser.GetName())
 
-		changes := diffResolvedLocation(previous, resolved)
+		changes := diffMaintainerProfile(m.Name, resolvedName, previous, resolved)
 		if len(changes) == 0 {
 			summary.Unchanged++
 			time.Sleep(cfg.Pause)
@@ -112,6 +113,9 @@ func main() {
 			"location": stringPtrToUpdateValue(resolved.Location),
 			"country":  stringPtrToUpdateValue(resolved.Country),
 			"timezone": stringPtrToUpdateValue(resolved.Timezone),
+		}
+		if _, nameChanged := changes["name"]; nameChanged {
+			updates["name"] = resolvedName
 		}
 		if err := dbConn.Model(&model.Maintainer{}).
 			Where("id = ?", m.ID).
@@ -125,7 +129,8 @@ func main() {
 		// Only count the outcome once the write has actually succeeded -- counting it
 		// beforehand double-counts a failed write as both updated/cleared and errored,
 		// which overstates the run log and finish-audit totals.
-		if resolved.Location == nil {
+		_, locationChanged := changes["location"]
+		if locationChanged && resolved.Location == nil {
 			summary.Cleared++
 		} else {
 			summary.Updated++
@@ -153,6 +158,16 @@ func main() {
 	if exceeded {
 		log.Fatalf("github-profile-sync: error rate %.3f exceeds -max-error-rate %.3f, failing run", errRate, cfg.MaxErrorRate)
 	}
+}
+
+// resolveMaintainerName treats a non-empty GitHub profile name as the current
+// display name. GitHub does not require users to set a name, so an empty
+// profile field preserves the existing maintainer name rather than erasing it.
+func resolveMaintainerName(existing, githubName string) string {
+	if name := strings.TrimSpace(githubName); name != "" {
+		return name
+	}
+	return existing
 }
 
 // recordFetchError classifies a GitHub API error into the appropriate summary counter.
@@ -286,6 +301,20 @@ func diffResolvedLocation(previous, resolved geo.ResolvedLocation) map[string]ma
 	return changes
 }
 
+// diffMaintainerProfile includes the GitHub display name alongside the
+// location fields managed by this sync.
+func diffMaintainerProfile(previousName, resolvedName string, previous, resolved geo.ResolvedLocation) map[string]map[string]string {
+	changes := diffResolvedLocation(previous, resolved)
+	if previousName != resolvedName {
+		from := strings.TrimSpace(previousName)
+		if from == "" {
+			from = "NAME_MISSING"
+		}
+		changes["name"] = map[string]string{"from": from, "to": resolvedName}
+	}
+	return changes
+}
+
 func stringPtrEqual(a, b *string) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -310,7 +339,7 @@ func stringPtrToUpdateValue(v *string) any {
 	return *v
 }
 
-// buildUpdateAuditEvent records a per-maintainer location/country/timezone change so staff
+// buildUpdateAuditEvent records a per-maintainer name/location/country/timezone change so staff
 // unfamiliar with a maintainer can see, at a glance, what this sync run changed on their record.
 func buildUpdateAuditEvent(m model.Maintainer, changes map[string]map[string]string) model.AuditLog {
 	fields := make([]string, 0, len(changes))

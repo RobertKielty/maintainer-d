@@ -22,7 +22,7 @@ const maintainerEntriesFixture = `maintainers:
 func TestParseProjectMaintainerEntriesReturnsLineNumbers(t *testing.T) {
 	entries, status, parseErr := ParseProjectMaintainerEntries(maintainerEntriesFixture)
 	require.Equal(t, ParseStatusParsed, status, parseErr)
-	require.Len(t, entries, 2)
+	require.Len(t, entries, 3)
 
 	byHandle := make(map[string]int, len(entries))
 	for _, entry := range entries {
@@ -30,7 +30,7 @@ func TestParseProjectMaintainerEntriesReturnsLineNumbers(t *testing.T) {
 	}
 	assert.Equal(t, 5, byHandle["alice-example"])
 	assert.Equal(t, 6, byHandle["bob-example"])
-	assert.NotContains(t, byHandle, "carol-example")
+	assert.Equal(t, 9, byHandle["carol-example"])
 }
 
 func TestParseProjectMaintainerHandlesMatchesEntriesWrapper(t *testing.T) {
@@ -49,15 +49,12 @@ func TestParseProjectMaintainerHandlesMatchesEntriesWrapper(t *testing.T) {
 	assert.Equal(t, expected, handles)
 }
 
-func TestParseProjectMaintainerEntriesNoTeamMembers(t *testing.T) {
+func TestParseProjectMaintainerEntriesNoTeams(t *testing.T) {
 	_, status, parseErr := ParseProjectMaintainerEntries(`maintainers:
-  - teams:
-      - name: other-team
-        members:
-          - carol-example
+  - teams: []
 `)
 	assert.Equal(t, ParseStatusInvalidShape, status)
-	assert.Equal(t, "no project-maintainers team found", parseErr)
+	assert.Equal(t, "no maintainer teams found", parseErr)
 }
 
 func TestParseProjectMaintainerEntriesTeamPresentButEmpty(t *testing.T) {
@@ -67,18 +64,23 @@ func TestParseProjectMaintainerEntriesTeamPresentButEmpty(t *testing.T) {
         members: []
 `)
 	assert.Equal(t, ParseStatusInvalidShape, status)
-	assert.Equal(t, "project-maintainers team has no members", parseErr)
+	assert.Equal(t, "maintainer teams have no members", parseErr)
 }
 
-func TestParseProjectMaintainerEntriesNearMissTeamName(t *testing.T) {
-	_, status, parseErr := ParseProjectMaintainerEntries(`maintainers:
+func TestParseProjectMaintainerEntriesAnyTeamName(t *testing.T) {
+	// Upstream (cncf/automation#602) dropped the requirement that a
+	// maintainer team be named exactly "project-maintainers" - any team
+	// name, including one that used to be treated as a near-miss, is now
+	// accepted.
+	entries, status, parseErr := ParseProjectMaintainerEntries(`maintainers:
   - teams:
       - name: Project Maintainers
         members:
           - carol-example
 `)
-	assert.Equal(t, ParseStatusInvalidShape, status)
-	assert.Equal(t, "no project-maintainers team found; saw maintainer-like team name(s) that did not match exactly: Project Maintainers", parseErr)
+	require.Equal(t, ParseStatusParsed, status, parseErr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "carol-example", entries[0].Handle)
 }
 
 func TestParseProjectMaintainerEntriesRejectsNonScalarMember(t *testing.T) {
@@ -93,7 +95,7 @@ func TestParseProjectMaintainerEntriesRejectsNonScalarMember(t *testing.T) {
           - {github: bob-example}
 `)
 	assert.Equal(t, ParseStatusInvalidShape, status)
-	assert.Equal(t, "project-maintainers member at line 6 is not a plain string", parseErr)
+	assert.Equal(t, "maintainer team member at line 6 is not a plain string", parseErr)
 }
 
 func TestParseProjectMaintainerEntriesRejectsNonStringScalarMember(t *testing.T) {
@@ -108,7 +110,7 @@ func TestParseProjectMaintainerEntriesRejectsNonStringScalarMember(t *testing.T)
           - null
 `)
 	assert.Equal(t, ParseStatusInvalidShape, status)
-	assert.Equal(t, "project-maintainers member at line 6 is not a plain string", parseErr)
+	assert.Equal(t, "maintainer team member at line 6 is not a plain string", parseErr)
 }
 
 func TestParseProjectMaintainerEntriesResolvesAliasedMembers(t *testing.T) {

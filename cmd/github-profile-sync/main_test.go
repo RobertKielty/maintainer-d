@@ -54,6 +54,41 @@ func TestDiffResolvedLocation(t *testing.T) {
 	}
 }
 
+func TestResolveMaintainerName(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   string
+		githubName string
+		want       string
+	}{
+		{name: "replaces unknown placeholder", existing: "Unknown maintainer", githubName: "Mona Lisa", want: "Mona Lisa"},
+		{name: "reconciles an existing name", existing: "Old Name", githubName: "Current Name", want: "Current Name"},
+		{name: "trims GitHub name", existing: "Old Name", githubName: "  Current Name  ", want: "Current Name"},
+		{name: "preserves existing name when GitHub name is empty", existing: "Known Name", githubName: "  ", want: "Known Name"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveMaintainerName(tc.existing, tc.githubName); got != tc.want {
+				t.Errorf("resolveMaintainerName(%q, %q) = %q, want %q", tc.existing, tc.githubName, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDiffMaintainerProfileIncludesName(t *testing.T) {
+	location := geo.ResolvedLocation{Location: strPtr("Berlin, Germany"), Country: strPtr("DE"), Timezone: strPtr("Europe/Berlin")}
+	changes := diffMaintainerProfile("Unknown maintainer", "Mona Lisa", location, location)
+
+	if len(changes) != 1 {
+		t.Fatalf("diffMaintainerProfile() = %v, want only name", changes)
+	}
+	want := map[string]string{"from": "Unknown maintainer", "to": "Mona Lisa"}
+	if got := changes["name"]; got["from"] != want["from"] || got["to"] != want["to"] {
+		t.Errorf("name change = %v, want %v", got, want)
+	}
+}
+
 func TestDisplayValueUsesMissingPlaceholder(t *testing.T) {
 	if got := displayValue("country", nil); got != "COUNTRY_MISSING" {
 		t.Errorf("displayValue(country, nil) = %q, want COUNTRY_MISSING", got)

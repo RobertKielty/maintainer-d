@@ -96,7 +96,7 @@ Then("the dot-project roll call shows the persisted discovery summary", async fu
   await expect(contentColumn.getByText("1.0.0", { exact: true })).toBeVisible({ timeout: 15000 });
   await expect(contentColumn.getByText("Maintainer count", { exact: true })).toBeVisible({ timeout: 15000 });
   await expect(
-    contentColumn.locator('[class*="dotProjectSummaryCard"]').filter({ hasText: "Maintainer count" }).getByText("3", {
+    contentColumn.locator('[class*="dotProjectSummaryCard"]').filter({ hasText: "Maintainer count" }).getByText("7", {
       exact: true,
     })
   ).toBeVisible({ timeout: 15000 });
@@ -138,9 +138,22 @@ Then("the dot-project roll call renders the cached maintainer file as formatted 
   await expect(viewer.getByRole("heading", { name: "Formatted maintainer file", exact: true })).toBeVisible({
     timeout: 15000,
   });
-  await expect(viewer.locator('[class*="dotProjectTeamName"]').getByText("project-maintainers")).toBeVisible({
-    timeout: 15000,
-  });
+  // Projects name their teams freely (cncf/automation#602); the seeded file
+  // mixes the legacy name with others, and none should trip the old
+  // "project-maintainers team was not found" validation banner.
+  for (const teamName of [
+    "project-maintainers",
+    "maintainers",
+    "release-team",
+    "emeritus",
+    "emeritus-maintainers",
+    "community",
+  ]) {
+    await expect(
+      viewer.locator('[class*="dotProjectTeamName"]').getByText(teamName, { exact: true })
+    ).toBeVisible({ timeout: 15000 });
+  }
+  await expect(viewer.getByText(/team was not found/)).toHaveCount(0);
   await expect(viewer.locator('[class*="dotProjectMemberChip"]').getByText("antonio-example")).toBeVisible({
     timeout: 15000,
   });
@@ -173,7 +186,7 @@ Then("the dot-project roll call renders the cached maintainer file as formatted 
   await expect(preview.getByRole("button", { name: "Submit Pull Request" })).toBeVisible({ timeout: 15000 });
   await expect(preview.getByText("Existing MAINTAINERS.yaml")).toBeVisible({ timeout: 15000 });
   await expect(preview.getByText("Proposed MAINTAINERS.yaml")).toBeVisible({ timeout: 15000 });
-  await expect(preview.locator('[class*="dotProjectLineNumberAdded"]').getByText("9", { exact: true })).toBeVisible({
+  await expect(preview.locator('[class*="dotProjectLineNumberAdded"]').getByText("8", { exact: true })).toBeVisible({
     timeout: 15000,
   });
   await expect(preview.locator('[class*="dotProjectDiffLineAdded"]').getByText("alex-example")).toBeVisible({

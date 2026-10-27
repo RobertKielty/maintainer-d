@@ -15,17 +15,23 @@ type MaintainerPatch struct {
 }
 
 var (
-	projectMaintainersNameRE = regexp.MustCompile(`(?i)^\s*(?:-\s*)?name:\s*["']?project-maintainers["']?\s*(?:#.*)?$`)
-	membersLineRE            = regexp.MustCompile(`(?i)^\s*members:\s*(?:#.*)?$`)
-	sequenceItemRE           = regexp.MustCompile(`^\s*-\s*(\S+)\s*(?:#.*)?$`)
-	todoCommentRE            = regexp.MustCompile(`(?i)^\s*#\s*TODO\b.*$`)
+	// teamNameLineRE matches a `- name: <anything>` list item under a
+	// `teams:` sequence. It used to require the literal name
+	// "project-maintainers" - upstream (cncf/automation#602) dropped that
+	// requirement, so every team is now a candidate. This write path still
+	// has to pick one team to patch into, so it targets whichever team
+	// comes first in the file, regardless of name.
+	teamNameLineRE = regexp.MustCompile(`(?i)^\s*(?:-\s*)?name:\s*\S.*$`)
+	membersLineRE  = regexp.MustCompile(`(?i)^\s*members:\s*(?:#.*)?$`)
+	sequenceItemRE = regexp.MustCompile(`^\s*-\s*(\S+)\s*(?:#.*)?$`)
+	todoCommentRE  = regexp.MustCompile(`(?i)^\s*#\s*TODO\b.*$`)
 )
 
 func BuildMaintainerRosterPatch(source string, activeHandles []string) (*MaintainerPatch, error) {
 	lines := splitPatchLines(source)
-	teamIndex := findProjectMaintainersTeam(lines)
+	teamIndex := findMaintainerTeam(lines)
 	if teamIndex < 0 {
-		return nil, fmt.Errorf("project-maintainers team was not found")
+		return nil, fmt.Errorf("no maintainer team found in maintainers.yaml")
 	}
 
 	teamIndent := leadingWhitespaceLength(lines[teamIndex])
@@ -123,16 +129,18 @@ func BuildMaintainerRosterPatch(source string, activeHandles []string) (*Maintai
 	}, nil
 }
 
-// GenerateMaintainersRosterYAML builds a scaffold MAINTAINERS.yaml for a project
-// that does not yet have a .project repo, populating the project-maintainers
-// team from the given active GitHub handles.
+// GenerateMaintainersRosterYAML builds a scaffold MAINTAINERS.yaml for a
+// project that does not yet have a .project repo, populating a maintainer
+// team from the given active GitHub handles. The team name matches
+// upstream's current scaffold (cncf/automation#602), which emits "maintainers"
+// rather than the retired "project-maintainers" name.
 func GenerateMaintainersRosterYAML(activeHandles []string) string {
 	handles := missingActiveHandles(activeHandles, map[string]struct{}{})
 
 	var builder strings.Builder
 	builder.WriteString("maintainers:\n")
 	builder.WriteString("  - teams:\n")
-	builder.WriteString("      - name: \"project-maintainers\"\n")
+	builder.WriteString("      - name: \"maintainers\"\n")
 	builder.WriteString("        members:\n")
 	if len(handles) == 0 {
 		builder.WriteString("          # TODO: Add maintainer GitHub handles\n")
@@ -154,9 +162,9 @@ func splitPatchLines(source string) []string {
 	return strings.Split(source, "\n")
 }
 
-func findProjectMaintainersTeam(lines []string) int {
+func findMaintainerTeam(lines []string) int {
 	for index, line := range lines {
-		if projectMaintainersNameRE.MatchString(line) {
+		if teamNameLineRE.MatchString(line) {
 			return index
 		}
 	}

@@ -496,7 +496,7 @@ func TestProjectDetailGeneratesMaintainersYamlWhenNoDotProjectFile(t *testing.T)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&response))
 	require.Nil(t, response.DotProjectMaintainerCache)
 	require.NotEmpty(t, response.DotProjectGeneratedMaintainersYaml)
-	assert.Contains(t, response.DotProjectGeneratedMaintainersYaml, `name: "project-maintainers"`)
+	assert.Contains(t, response.DotProjectGeneratedMaintainersYaml, `name: "maintainers"`)
 	assert.Contains(t, response.DotProjectGeneratedMaintainersYaml, "- alice-example")
 	assert.NotContains(t, response.DotProjectGeneratedMaintainersYaml, "departed-example")
 }

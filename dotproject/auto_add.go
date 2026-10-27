@@ -28,6 +28,15 @@ type LFXIdentityResolver interface {
 	ResolveMaintainerIdentity(ctx context.Context, githubHandle, email string) (LFXIdentityResult, error)
 }
 
+// GitHubProfileResolver looks up the display name on a GitHub user's profile.
+// A handle found in .project/maintainers.yaml has already been through PR
+// review, so it is trusted as the maintainer's identity; the profile name is
+// used to give that maintainer a real name instead of "Unknown maintainer"
+// when no other source (foundation CSV, LFX) has one.
+type GitHubProfileResolver interface {
+	GetMaintainerName(ctx context.Context, githubHandle string) (string, error)
+}
+
 type LFXIdentityResult struct {
 	UserID     string
 	LFID       string
@@ -44,6 +53,9 @@ type AutoMaintainerAdder struct {
 	Store      AutoAddStore
 	Foundation *FoundationMaintainerIndex
 	LFX        LFXIdentityResolver
+	// GitHubProfiles is optional; when nil, a newly created maintainer's name
+	// falls back to whatever the foundation CSV provided (often empty).
+	GitHubProfiles GitHubProfileResolver
 	// Provenance resolves a source line to the commit/PR/review that
 	// introduced it. Optional: when nil, observations still write with
 	// their location fields but no PR/review evidence, and confidence
@@ -126,7 +138,7 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 		summary.SkippedInvalidMaintainers++
 		if a.Logger != nil {
 			a.Logger.Infow(
-				"skipping auto-add for invalid project-maintainers file",
+				"skipping auto-add for invalid maintainers.yaml file",
 				"project_id", project.ID,
 				"project_name", project.Name,
 				"maintainers_url", fileDiscoveryURL(result.MaintainersFile),
@@ -137,9 +149,11 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 		return summary, nil
 	}
 	lineByHandle := make(map[string]int, len(entries))
+	teamByHandle := make(map[string]string, len(entries))
 	handles := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		lineByHandle[entry.Handle] = entry.Line
+		teamByHandle[entry.Handle] = entry.TeamName
 		handles = append(handles, entry.Handle)
 	}
 
@@ -178,7 +192,7 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 			maintainerID = &id
 		}
 
-		if err := a.writeDotProjectObservation(ctx, project, maintainerID, normalized, result.MaintainersFile, result.DefaultBranch, lineByHandle[normalized], now); err != nil {
+		if err := a.writeDotProjectObservation(ctx, project, maintainerID, normalized, result.MaintainersFile, result.DefaultBranch, lineByHandle[normalized], teamByHandle[normalized], now); err != nil {
 			// An expired run context is the run's failure, not this row's:
 			// counting it as an audit failure and continuing would let a
 			// timed-out run finish as a non-partial success. Ordinary
@@ -246,7 +260,7 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 			}
 			if didLink {
 				summary.LinkedMaintainers++
-				if err := a.logAutoAdd(project, maintainer, record, result, nil, now, "linked"); err != nil {
+				if err := a.logAutoAdd(project, maintainer, record, result, nil, now, "linked", teamByHandle[normalized]); err != nil {
 					summary.AuditFailures++
 				}
 			}
@@ -285,7 +299,8 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 			}
 			lfxUserID = strings.TrimSpace(identity.UserID)
 		}
-		maintainer, created, didLink, err := a.Store.UpsertMaintainerWithIdentity(project.ID, record.Name, email, displayGitHub(record, normalized), record.Company, lfxUserID)
+		name := a.resolveMaintainerName(ctx, normalized, record.Name)
+		maintainer, created, didLink, err := a.Store.UpsertMaintainerWithIdentity(project.ID, name, email, displayGitHub(record, normalized), record.Company, lfxUserID)
 		if err != nil {
 			return summary, err
 		}
@@ -303,7 +318,7 @@ func (a *AutoMaintainerAdder) ProcessProject(ctx context.Context, project model.
 			}
 		}
 		if created || didLink {
-			if err := a.logAutoAdd(project, maintainer, record, result, &identity, now, actionFor(created)); err != nil {
+			if err := a.logAutoAdd(project, maintainer, record, result, &identity, now, actionFor(created), teamByHandle[normalized]); err != nil {
 				summary.AuditFailures++
 			}
 		}
@@ -441,11 +456,30 @@ func (a *AutoMaintainerAdder) resolveFoundationProvenance(ctx context.Context, r
 	return prov, reviewState, nil
 }
 
-// writeDotProjectObservation records that github was found in the
-// project-maintainers team of the dot-project maintainers.yaml file -
-// membership there is the current gatekeeping mechanism for official CNCF
-// project maintainer status.
-func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, project model.Project, maintainerID *uint, github string, file FileDiscovery, branch string, line int, now time.Time) error {
+// dotProjectMatchReason reports why github was matched, naming the team it
+// was found in when the parsed entry carries a team name.
+func dotProjectMatchReason(teamName string) string {
+	teamName = strings.TrimSpace(teamName)
+	if teamName == "" {
+		return "member of a maintainer team in .project/maintainers.yaml"
+	}
+	return fmt.Sprintf("member of the %q team in .project/maintainers.yaml", teamName)
+}
+
+// dotProjectAuditSource names the maintainers.yaml team a handle was found
+// in, rather than assuming the retired "project-maintainers" team name.
+func dotProjectAuditSource(teamName string) string {
+	teamName = strings.TrimSpace(teamName)
+	if teamName == "" {
+		return ".project/maintainers.yaml"
+	}
+	return ".project/maintainers.yaml " + teamName
+}
+
+// writeDotProjectObservation records that github was found in a maintainer
+// team of the dot-project maintainers.yaml file - membership there is the
+// current gatekeeping mechanism for official CNCF project maintainer status.
+func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, project model.Project, maintainerID *uint, github string, file FileDiscovery, branch string, line int, teamName string, now time.Time) error {
 	prov, reviewState, resolveErr := a.resolveDotProjectProvenance(ctx, project, file, branch, line)
 	if resolveErr != nil {
 		// The upsert overwrites every provenance column, so writing the empty
@@ -469,7 +503,7 @@ func (a *AutoMaintainerAdder) writeDotProjectObservation(ctx context.Context, pr
 		SourceRef:         "github:" + NormalizeGitHubHandle(github),
 		GitHubUser:        github,
 		MatchStatus:       "matched",
-		MatchReason:       "member of project-maintainers team in .project/maintainers.yaml",
+		MatchReason:       dotProjectMatchReason(teamName),
 		Confidence:        confidence,
 		ObservedAt:        now,
 		SourceFilePath:    strings.TrimSpace(file.Path),
@@ -545,7 +579,7 @@ func (a *AutoMaintainerAdder) resolveDotProjectProvenance(ctx context.Context, p
 	return prov, reviewState, nil
 }
 
-func (a *AutoMaintainerAdder) logAutoAdd(project model.Project, maintainer *model.Maintainer, record FoundationMaintainerRecord, result *DiscoveryResult, identity *LFXIdentityResult, now time.Time, mode string) error {
+func (a *AutoMaintainerAdder) logAutoAdd(project model.Project, maintainer *model.Maintainer, record FoundationMaintainerRecord, result *DiscoveryResult, identity *LFXIdentityResult, now time.Time, mode string, teamName string) error {
 	projectID := project.ID
 	var maintainerID *uint
 	var maintainerPath string
@@ -618,7 +652,8 @@ func (a *AutoMaintainerAdder) logAutoAdd(project model.Project, maintainer *mode
 		"name":                         maintainerName,
 		"email":                        maintainerEmail,
 		"lfx_id":                       lfxID,
-		"source":                       ".project/maintainers.yaml project-maintainers",
+		"source":                       dotProjectAuditSource(teamName),
+		"team":                         strings.TrimSpace(teamName),
 		"source_url":                   fileDiscoveryURL(resultMaintainersFile(result)),
 		"foundation_csv_gate_enabled":  a.CheckFoundationCSV,
 		"auto_add_maintainers_enabled": a.AutoAddMaintainers,
@@ -817,6 +852,26 @@ func isPlaceholderGitHubHandle(handle string) bool {
 
 func isUsableLFXConfidence(confidence string) bool {
 	return confidence == "exact" || confidence == "strong"
+}
+
+// resolveMaintainerName names a newly discovered maintainer. The GitHub
+// profile is tried first: the handle came from a PR-reviewed
+// .project/maintainers.yaml entry, so it is trusted, and most maintainers
+// have a real name set on GitHub even when the foundation CSV has never
+// heard of them. foundationName is used when the profile has no name set,
+// or when the lookup itself is unavailable or fails.
+func (a *AutoMaintainerAdder) resolveMaintainerName(ctx context.Context, githubHandle, foundationName string) string {
+	if a.GitHubProfiles != nil {
+		name, err := a.GitHubProfiles.GetMaintainerName(ctx, githubHandle)
+		if err != nil {
+			if a.Logger != nil {
+				a.Logger.Warnw("failed to fetch github profile name", "error", err, "github", githubHandle)
+			}
+		} else if trimmed := strings.TrimSpace(name); trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(foundationName)
 }
 
 func displayGitHub(record FoundationMaintainerRecord, fallback string) string {
