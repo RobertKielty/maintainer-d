@@ -421,6 +421,7 @@ help:
 	@echo "make sops-apply-server-secrets -> apply server secrets from SOPS (uses local sops; set SOPS_CMD or SOPS_AGE_KEY_FILE if needed)"
 	@echo "make sops-apply-bootstrap-secrets -> apply bootstrap secrets from SOPS"
 	@echo "make deploy-web -> apply web-bff/web services + deployments + ingress + cert"
+	@echo "make image-set TAG=... -> set every Deployment and CronJob to one release tag (TAG required)"
 	@echo "make web-image-set TAG=... -> set maintainerd-web image to a specific tag"
 	@echo "make web-release TAG=... -> build+push web & web-bff with same tag, then set both images"
 	@echo "make github-profile-sync-image-build -> build GitHub profile sync image $(GITHUB_PROFILE_SYNC_IMAGE) locally"
@@ -1039,18 +1040,27 @@ dot-project-sync-image-set:
 	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
 		set image cronjob/dot-project-sync '*=$(DOT_PROJECT_SYNC_IMAGE)'
 
-.PHONY: onboarding-backfill-image-set
-onboarding-backfill-image-set:
+.PHONY: github-profile-sync-image-set
+github-profile-sync-image-set:
 	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make onboarding-backfill-image-set TAG=<tag>"; exit 1; \
+		echo "Usage: make github-profile-sync-image-set TAG=<tag>"; exit 1; \
 	fi
-	@echo "Setting maintainerd-onboarding-backfill image to $(ONBOARDING_BACKFILL_IMAGE) [ns=$(NAMESPACE)]"
+	@echo "Setting maintainerd-github-profile-sync image to $(GITHUB_PROFILE_SYNC_IMAGE) [ns=$(NAMESPACE)]"
 	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image cronjob/maintainerd-onboarding-backfill '*=$(ONBOARDING_BACKFILL_IMAGE)'
+		set image cronjob/github-profile-sync '*=$(GITHUB_PROFILE_SYNC_IMAGE)'
 
 .PHONY: image-set
-image-set: mntrd-image-set web-image-set web-bff-image-set fossa-poller-image-set dot-project-sync-image-set onboarding-backfill-image-set
-	@true
+# Sets every long-lived workload (Deployments and CronJobs) to one release TAG.
+# One-shot Jobs in deploy/jobs/ are not covered: a Job's image is fixed when it
+# is created, so pick the tag in the Job manifest when you run it.
+# TAG must be passed explicitly: the computed default includes today's date, so
+# it silently names images that were never built if the build ran on another day.
+image-set:
+	@case "$(origin TAG)" in \
+		"command line"|environment) ;; \
+		*) echo "Usage: make image-set TAG=<tag> (pass the tag that images-push published)"; exit 1 ;; \
+	esac
+	@$(MAKE) --no-print-directory mntrd-image-set web-image-set web-bff-image-set fossa-poller-image-set dot-project-sync-image-set github-profile-sync-image-set TAG=$(TAG)
 
 # Convenience combo target
 .PHONY: secrets
