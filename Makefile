@@ -23,6 +23,28 @@ WEB_BFF_IMAGE ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-web-bff:$(TAG)
 WEB_BFF_IMAGE_LATEST ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-web-bff:latest
 WEB_IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-web
 WEB_BFF_IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-web-bff
+IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd
+DOT_PROJECT_SYNC_IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-dot-project-sync
+FOSSA_POLLER_IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-fossa-poller
+GITHUB_PROFILE_SYNC_IMAGE_REPO ?= $(REGISTRY)/$(GH_ORG_LC)/maintainerd-github-profile-sync
+
+# Deploying an image means pinning its tag in deploy/manifests/kustomization.yaml
+# and applying that directory, so git records what is running.
+# TAG must be passed explicitly: the computed default includes today's date, so
+# it silently names images that were never built if the build ran on another day.
+define require-explicit-tag
+@case "$(origin TAG)" in \
+	"command line"|environment) ;; \
+	*) echo "Usage: make $@ TAG=<tag> (pass the tag that the image push published)"; exit 1 ;; \
+esac
+endef
+
+# $(call pin-and-apply,<image repos>)
+define pin-and-apply
+@scripts/pin-image-tag.sh $(TAG) $(1)
+@$(MAKE) --no-print-directory manifests-apply
+@echo "Commit deploy/manifests/kustomization.yaml so git matches the cluster."
+endef
 
 # Docker buildkit progress (docker-only). Example: BUILD_PROGRESS=plain
 BUILD_PROGRESS ?= auto
@@ -132,27 +154,14 @@ mntrd-image-push: mntrd-image-build
 
 .PHONY: mntrd-image-deploy
 mntrd-image-deploy: mntrd-image-push
-	@echo "Image pushed. Attempting rollout on context $(CTX_STR)."
-	@CTX_FLAG="$(if $(KUBECONTEXT),--context $(KUBECONTEXT))" ; \
-	if kubectl $$CTX_FLAG config current-context >/dev/null 2>&1; then \
-		echo "Updating Deployment/maintainerd image to $(IMAGE) [ctx=$(CTX_STR)]"; \
-		kubectl -n $(NAMESPACE) $$CTX_FLAG set image deploy/maintainerd '*=$(IMAGE)'; \
-		echo "Rolling restart Deployment/maintainerd [ctx=$(CTX_STR)]"; \
-		kubectl -n $(NAMESPACE) $$CTX_FLAG rollout restart deploy/maintainerd; \
-		echo "Waiting for rollout to complete [ctx=$(CTX_STR)]"; \
-		kubectl -n $(NAMESPACE) $$CTX_FLAG rollout status deploy/maintainerd --timeout=180s; \
-	else \
-		echo "kubectl context $(CTX_STR) unavailable; skipping rollout"; \
-	fi
+	@echo "Image pushed. Deploying $(IMAGE) [ctx=$(CTX_STR)]"
+	@$(MAKE) --no-print-directory mntrd-image-set TAG=$(TAG)
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) rollout status deploy/maintainerd --timeout=180s
 
 .PHONY: mntrd-image-set
 mntrd-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make mntrd-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd image to $(IMAGE) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image deploy/maintainerd '*=$(IMAGE)'
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(IMAGE_REPO))
 
 .PHONY: dot-project-sync-image-push
 dot-project-sync-image-push: dot-project-sync-image-build
@@ -262,23 +271,12 @@ web-bff-image-push: web-bff-image-build
 .PHONY: dot-project-sync-image-deploy
 dot-project-sync-image-deploy: dot-project-sync-image-push
 	@echo "Image pushed. Updating CronJob/dot-project-sync in $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@CTX_FLAG="$(if $(KUBECONTEXT),--context $(KUBECONTEXT))" ; \
-	if ! kubectl $$CTX_FLAG config current-context >/dev/null 2>&1; then \
-		echo "kubectl context $(CTX_STR) unavailable; skipping rollout"; exit 0; \
-	fi ; \
-	if ! kubectl -n $(NAMESPACE) $$CTX_FLAG get cronjob/dot-project-sync >/dev/null 2>&1; then \
-		echo "CronJob/dot-project-sync not found in namespace $(NAMESPACE)."; \
-		echo "Hint: apply deploy/manifests/dot-project-sync-cronjob.yaml or run 'make dot-project-sync-apply'."; \
-		exit 1; \
-	fi ; \
-	kubectl -n $(NAMESPACE) $$CTX_FLAG set image cronjob/dot-project-sync '*=$(DOT_PROJECT_SYNC_IMAGE)'; \
-	kubectl -n $(NAMESPACE) $$CTX_FLAG delete job -l job-name=dot-project-sync --ignore-not-found; \
-	echo "Next scheduled run will pull $(DOT_PROJECT_SYNC_IMAGE)."
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete job -l job-name=dot-project-sync --ignore-not-found
+	@$(MAKE) --no-print-directory dot-project-sync-image-set TAG=$(TAG)
+	@echo "Next scheduled run will pull $(DOT_PROJECT_SYNC_IMAGE)."
 
 .PHONY: dot-project-sync-apply
-dot-project-sync-apply:
-	@echo "Applying dot-project sync CronJob in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/dot-project-sync-cronjob.yaml
+dot-project-sync-apply: manifests-apply
 
 .PHONY: dot-project-sync-run
 dot-project-sync-run:
@@ -328,7 +326,7 @@ fossa-poller-deploy:
 		echo "$${jobs}" | xargs -r kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete --wait=true; \
 	fi; \
 	echo "Applying fossa poller deployment in namespace $(NAMESPACE) [ctx=$(CTX_STR)]"; \
-	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/maintainerd-fossa-poller-deployment.yaml; \
+	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -k deploy/manifests; \
 	kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) rollout status deployment/maintainerd-fossa-poller --timeout=180s; \
 	'
 
@@ -420,10 +418,11 @@ help:
 	@echo "make sops-apply-web-secrets -> apply web/db/server secrets from SOPS (uses local sops; set SOPS_CMD or SOPS_AGE_KEY_FILE if needed)"
 	@echo "make sops-apply-server-secrets -> apply server secrets from SOPS (uses local sops; set SOPS_CMD or SOPS_AGE_KEY_FILE if needed)"
 	@echo "make sops-apply-bootstrap-secrets -> apply bootstrap secrets from SOPS"
-	@echo "make deploy-web -> apply web-bff/web services + deployments + ingress + cert"
-	@echo "make image-set TAG=... -> set every Deployment and CronJob to one release tag (TAG required)"
-	@echo "make web-image-set TAG=... -> set maintainerd-web image to a specific tag"
-	@echo "make web-release TAG=... -> build+push web & web-bff with same tag, then set both images"
+	@echo "make deploy-web -> same as manifests-apply (kept for muscle memory)"
+	@echo "make image-pin TAG=... -> pin every Deployment and CronJob to one tag in deploy/manifests/kustomization.yaml"
+	@echo "make image-set TAG=... -> image-pin, then manifests-apply (commit kustomization.yaml afterwards)"
+	@echo "make web-image-set TAG=... -> pin only maintainerd-web to TAG, then manifests-apply"
+	@echo "make web-release TAG=... -> build+push web & web-bff with same tag, then pin and apply both"
 	@echo "make github-profile-sync-image-build -> build GitHub profile sync image $(GITHUB_PROFILE_SYNC_IMAGE) locally"
 	@echo "make github-profile-sync-image-push -> build and push $(GITHUB_PROFILE_SYNC_IMAGE)"
 	@echo "make dot-project-sync-image-build -> build dot-project sync image $(DOT_PROJECT_SYNC_IMAGE) locally"
@@ -432,7 +431,7 @@ help:
 	@echo "make print           -> show which keys would be loaded (without values)"
 	@echo "make mntrd-image-build  -> build maintainerd image $(IMAGE) locally"
 	@echo "make mntrd-image-push   -> build and push $(IMAGE) (uses GHCR_TOKEN + GHCR_USER for ghcr login)"
-	@echo "make mntrd-image-deploy -> build, push, and restart Deployment in $(NAMESPACE)"
+	@echo "make mntrd-image-deploy -> build, push, pin the new tag and apply"
 	@echo "make dot-project-sync-apply -> apply the hourly dot-project sync CronJob"
 	@echo "make dot-project-sync-run -> trigger a manual dot-project sync job"
 	@echo "make fossa-poller-deploy -> apply Deployment for the long-running FOSSA poller"
@@ -441,8 +440,9 @@ help:
 	@echo "make migrate-schema-safe -> scale down, run migration pinned to attached node, scale back up"
 	@echo "make ensure-ns       -> ensure namespace $(NAMESPACE) exists"
 	@echo "make apply-ghcr-secret -> create/update docker-registry Secret 'ghcr-secret'"
-	@echo "make manifests-apply -> kubectl apply -f deploy/manifests (prod-only)"
-	@echo "make manifests-delete-> kubectl delete -f deploy/manifests (cleanup)"
+	@echo "make manifests-apply -> kubectl apply -k deploy/manifests, with pinned image tags (prod-only)"
+	@echo "make manifests-diff  -> kubectl diff -k deploy/manifests (empty = git matches cluster)"
+	@echo "make manifests-delete-> kubectl delete -k deploy/manifests (cleanup)"
 	@echo "make cluster-up      -> ensure ns + secrets + ghcr secret + apply manifests"
 	@echo "make maintainerd-delete -> delete Deployment/Service maintainerd"
 	@echo "make maintainerd-restart -> rollout restart Deployment/maintainerd"
@@ -983,32 +983,19 @@ sops-edit-web-bff-secrets:
 	fi;'
 
 .PHONY: deploy-web
-deploy-web:
-	@echo "Deploying web-bff + web + ingress + cert [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/web-bff-service.yaml
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/web-bff-deployment.yaml
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/web-service.yaml
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/web-deployment.yaml
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/ingress-maintainerd-web.yaml
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests/certificate-github-events.yaml
+# Applying single files with -f would skip the pinned tags in kustomization.yaml
+# and deploy :latest, so this applies the whole (re-apply-safe) directory.
+deploy-web: manifests-apply
 
 .PHONY: web-image-set
 web-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make web-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd-web image to $(WEB_IMAGE_REPO):$(TAG) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image deploy/maintainerd-web web=$(WEB_IMAGE_REPO):$(TAG)
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(WEB_IMAGE_REPO))
 
 .PHONY: web-bff-image-set
 web-bff-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make web-bff-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd-web-bff image to $(WEB_BFF_IMAGE_REPO):$(TAG) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image deploy/maintainerd-web-bff web-bff=$(WEB_BFF_IMAGE_REPO):$(TAG)
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(WEB_BFF_IMAGE_REPO))
 
 .PHONY: web-release
 web-release:
@@ -1017,50 +1004,43 @@ web-release:
 	fi
 	@$(MAKE) web-image-push TAG=$(TAG)
 	@$(MAKE) web-bff-image-push TAG=$(TAG)
-	@$(MAKE) web-image-set TAG=$(TAG)
-	@$(MAKE) web-bff-image-set TAG=$(TAG)
+	@scripts/pin-image-tag.sh $(TAG) $(WEB_IMAGE_REPO) $(WEB_BFF_IMAGE_REPO)
+	@$(MAKE) --no-print-directory manifests-apply
+	@echo "Commit deploy/manifests/kustomization.yaml so git matches the cluster."
 
 .PHONY: fossa-poller-image-set
 fossa-poller-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make fossa-poller-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting Deployment/maintainerd-fossa-poller image to $(FOSSA_POLLER_IMAGE) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image deployment/maintainerd-fossa-poller fossa-poller=$(FOSSA_POLLER_IMAGE)
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(FOSSA_POLLER_IMAGE_REPO))
 	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
 		rollout status deployment/maintainerd-fossa-poller --timeout=180s
 
 .PHONY: dot-project-sync-image-set
 dot-project-sync-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make dot-project-sync-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd-dot-project-sync image to $(DOT_PROJECT_SYNC_IMAGE) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image cronjob/dot-project-sync '*=$(DOT_PROJECT_SYNC_IMAGE)'
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(DOT_PROJECT_SYNC_IMAGE_REPO))
 
 .PHONY: github-profile-sync-image-set
 github-profile-sync-image-set:
-	@if [ -z "$(TAG)" ]; then \
-		echo "Usage: make github-profile-sync-image-set TAG=<tag>"; exit 1; \
-	fi
-	@echo "Setting maintainerd-github-profile-sync image to $(GITHUB_PROFILE_SYNC_IMAGE) [ns=$(NAMESPACE)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) \
-		set image cronjob/github-profile-sync '*=$(GITHUB_PROFILE_SYNC_IMAGE)'
+	$(require-explicit-tag)
+	$(call pin-and-apply,$(GITHUB_PROFILE_SYNC_IMAGE_REPO))
 
 .PHONY: image-set
 # Sets every long-lived workload (Deployments and CronJobs) to one release TAG.
 # One-shot Jobs in deploy/jobs/ are not covered: a Job's image is fixed when it
 # is created, so pick the tag in the Job manifest when you run it.
-# TAG must be passed explicitly: the computed default includes today's date, so
-# it silently names images that were never built if the build ran on another day.
 image-set:
-	@case "$(origin TAG)" in \
-		"command line"|environment) ;; \
-		*) echo "Usage: make image-set TAG=<tag> (pass the tag that images-push published)"; exit 1 ;; \
-	esac
-	@$(MAKE) --no-print-directory mntrd-image-set web-image-set web-bff-image-set fossa-poller-image-set dot-project-sync-image-set github-profile-sync-image-set TAG=$(TAG)
+	$(require-explicit-tag)
+	@$(MAKE) --no-print-directory image-pin TAG=$(TAG)
+	@$(MAKE) --no-print-directory manifests-apply
+	@echo "Commit deploy/manifests/kustomization.yaml so git matches the cluster."
+
+.PHONY: image-pin
+# Pins every long-lived workload to one release TAG in
+# deploy/manifests/kustomization.yaml without touching the cluster.
+image-pin:
+	$(require-explicit-tag)
+	@scripts/pin-image-tag.sh $(TAG) $(IMAGE_REPO) $(WEB_IMAGE_REPO) $(WEB_BFF_IMAGE_REPO) $(FOSSA_POLLER_IMAGE_REPO) $(DOT_PROJECT_SYNC_IMAGE_REPO) $(GITHUB_PROFILE_SYNC_IMAGE_REPO)
 
 # Convenience combo target
 .PHONY: secrets
@@ -1246,12 +1226,17 @@ apply-ghcr-secret:
 .PHONY: manifests-apply
 manifests-apply:
 	@echo "Applying manifests in deploy/manifests to namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -f deploy/manifests
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) apply -k deploy/manifests
+
+.PHONY: manifests-diff
+# Shows what manifests-apply would change; empty output means git matches the cluster.
+manifests-diff:
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) diff -k deploy/manifests || [ $$? -eq 1 ]
 
 .PHONY: manifests-delete
 manifests-delete:
 	@echo "Deleting manifests in deploy/manifests from namespace $(NAMESPACE) [ctx=$(CTX_STR)]"
-	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete -f deploy/manifests --ignore-not-found
+	@kubectl -n $(NAMESPACE) $(if $(KUBECONTEXT),--context $(KUBECONTEXT)) delete -k deploy/manifests --ignore-not-found
 .PHONY: cluster-up
 cluster-up: ensure-ns apply-ghcr-secret secrets manifests-apply
 	@echo "Maintainerd resources applied to $(NAMESPACE) [ctx=$(CTX_STR)]"

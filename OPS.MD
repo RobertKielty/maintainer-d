@@ -19,6 +19,33 @@ make manifests-apply
 ```
 `deploy/manifests/` contains only long-lived resources, so re-applying it is safe. One-shot Jobs live in `deploy/jobs/` and are never applied by `manifests-apply` (see "Run a one-shot job" below).
 
+`manifests-apply` runs `kubectl apply -k deploy/manifests`. The image tags that run in production are pinned in `deploy/manifests/kustomization.yaml` (`images:`), not in the individual files, so never apply those files with `-f`: that would deploy `:latest`. Check for drift between git and the cluster with:
+```
+make manifests-diff   # no output means the cluster matches git
+```
+
+## Release new images
+
+Goal: Deploy a new build and record it in git.
+
+1) Build and push with an explicit tag:
+```
+TAG=main-$(git rev-parse --short HEAD)-$(date -u +%a-%b-%d-%Y | tr a-z A-Z)
+make images-build TAG=$TAG && make images-push TAG=$TAG
+# or a single service: make web-image-push TAG=$TAG (builds first)
+```
+
+2) Pin the tag and apply:
+```
+make image-set TAG=$TAG            # every Deployment and CronJob
+make web-image-set TAG=$TAG        # or a single service
+```
+This rewrites `newTag` in `deploy/manifests/kustomization.yaml` and runs `manifests-apply`. To prepare the change without touching the cluster, use `make image-pin TAG=$TAG`.
+
+3) Commit `deploy/manifests/kustomization.yaml` and open a PR so git records what is running.
+
+To roll back, revert that commit and run `make manifests-apply`.
+
 3) Verify:
 ```
 kubectl -n maintainerd get pvc,deploy,svc,ing
@@ -89,23 +116,11 @@ kubectl -n maintainerd run pgdump --rm -i --restart=Never \
 
 Goal: Deploy web + BFF to production.
 
-1) Build/push images:
+Build, push, pin and apply both images with one tag (see "Release new images" above):
 ```
-make web-image-build
-make web-image-push
-make web-bff-image-build
-make web-bff-image-push
+make web-release TAG=<tag>
 ```
-
-2) Apply manifests:
-```
-make deploy-web
-```
-
-3) (Optional) pin the web image to a tag:
-```
-make web-image-set TAG=<tag>
-```
+Then commit `deploy/manifests/kustomization.yaml`.
 
 ## Manage secrets (dev vs production)
 

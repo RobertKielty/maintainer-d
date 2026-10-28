@@ -18,6 +18,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: web-bff
+          # tag pinned by kustomization.yaml (images:); apply with -k, not -f
           image: ghcr.io/robertkielty/maintainerd-web-bff:latest
           imagePullPolicy: Always
           ports:

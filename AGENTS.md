@@ -10,7 +10,8 @@ This document gives agents instructions and tips for working in this repository.
 - Do not add new SQLite-specific behavior, fallbacks, or documentation for new work unless the user explicitly asks for it.
 
 ## Deploy Rules
-- Apply manifests in `deploy/manifests` with `kubectl -n maintainerd apply -f deploy/manifests`. That directory holds only long-lived resources (Deployments, Services, Ingresses, CronJobs, cert-manager objects, the ServiceAccount) and is safe to re-apply.
+- Apply manifests in `deploy/manifests` with `kubectl -n maintainerd apply -k deploy/manifests` (`make manifests-apply`). That directory holds only long-lived resources (Deployments, Services, Ingresses, CronJobs, cert-manager objects, the ServiceAccount) and is safe to re-apply.
+- Production image tags are pinned in `deploy/manifests/kustomization.yaml`. Deploy a new tag with `make image-set TAG=<tag>` (or a per-service `*-image-set`), then commit that file. Never `kubectl set image` or apply single manifests with `-f`; both bypass the pinned tags.
 - One-shot Jobs (schema migration, backfills, add-staff, profile sync) live in `deploy/jobs/`. Apply them individually and on purpose; never apply that directory wholesale.
 - Ensure the `ghcr-secret` Secret and the per-workload env Secrets exist beforehand.
 

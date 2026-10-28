@@ -97,3 +97,5 @@ make manifests-delete  # delete manifests from cluster
 Required secrets in namespace `maintainerd`: `ghcr-secret` plus the per-workload env secrets (`maintainerd-server-env`, `maintainerd-db-env`, `maintainerd-web-env`, `maintainerd-web-bff-env`).
 
 `deploy/manifests/` holds only long-lived resources and is safe to re-apply. One-shot Jobs (schema migration, backfills, add-staff) live in `deploy/jobs/` and are applied individually, never wholesale.
+
+Production image tags are pinned in `deploy/manifests/kustomization.yaml`, which `make manifests-apply` applies with `kubectl apply -k`. Deploy with `make image-set TAG=<tag>` (or a per-service `*-image-set TAG=<tag>`) and commit the updated kustomization; `make manifests-diff` shows any drift between git and the cluster.

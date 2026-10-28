@@ -160,7 +160,8 @@ TEXT name
 
 
 ## Manifest layout
- - `deploy/manifests/` holds only long-lived resources (Deployments, Services, Ingresses, CronJobs, cert-manager objects, the ServiceAccount). `make manifests-apply` applies the whole directory and is safe to re-run.
+ - `deploy/manifests/` holds only long-lived resources (Deployments, Services, Ingresses, CronJobs, cert-manager objects, the ServiceAccount). `make manifests-apply` applies the whole directory with `kubectl apply -k` and is safe to re-run.
+ - `deploy/manifests/kustomization.yaml` pins the image tag of every workload. `make image-set TAG=<tag>` rewrites those tags and applies; commit the file afterwards. See "Release new images" in `OPS.MD`.
  - `deploy/jobs/` holds one-shot Jobs (schema migration, backfills, add-staff, profile sync). Apply them one file at a time, on purpose. See `deploy/jobs/README.md`.
  - The Google-worksheet `bootstrap` Job was retired. A possible replacement that discovers `.project` repos across the CNCF org is tracked in #181.
 

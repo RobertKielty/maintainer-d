@@ -18,6 +18,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: server
+          # tag pinned by kustomization.yaml (images:); apply with -k, not -f
           image: ghcr.io/robertkielty/maintainerd:latest
           imagePullPolicy: Always
           args:

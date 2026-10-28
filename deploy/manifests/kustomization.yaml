@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Everything listed here is long-lived and safe to re-apply:
+# `make manifests-apply` runs `kubectl apply -k deploy/manifests`.
+# One-shot Jobs live in deploy/jobs/ and are applied individually.
+resources:
+  - certificate-github-events.yaml
+  - clusterissuer-letsencrypt-http.yaml
+  - deployment.yaml
+  - dot-project-sync-cronjob.yaml
+  - github-profile-sync-cronjob.yaml
+  - ingress-github-events.yaml
+  - ingress-maintainerd-web.yaml
+  - maintainerd-fossa-poller-deployment.yaml
+  - service.yaml
+  - sync-rbac.yaml
+  - web-bff-deployment.yaml
+  - web-bff-service.yaml
+  - web-deployment.yaml
+  - web-service.yaml
+
+# The image tags running in production. These override the `:latest` in the
+# resource files. `make image-set TAG=<tag>` and the per-service *-image-set
+# targets rewrite newTag here (via scripts/pin-image-tag.sh) and then apply,
+# so commit this file after every deploy to keep git matching the cluster.
+images:
+  - name: ghcr.io/robertkielty/maintainerd
+    newTag: main-0afe327-TUE-OCT-27-2026
+  - name: ghcr.io/robertkielty/maintainerd-dot-project-sync
+    newTag: main-0afe327-TUE-OCT-27-2026
+  - name: ghcr.io/robertkielty/maintainerd-fossa-poller
+    newTag: main-0afe327-TUE-OCT-27-2026
+  - name: ghcr.io/robertkielty/maintainerd-github-profile-sync
+    newTag: main-0afe327-TUE-OCT-27-2026
+  - name: ghcr.io/robertkielty/maintainerd-web
+    newTag: main-7d4bf69d0b65-WED-OCT-28-2026
+  - name: ghcr.io/robertkielty/maintainerd-web-bff
+    newTag: main-0afe327-TUE-OCT-27-2026

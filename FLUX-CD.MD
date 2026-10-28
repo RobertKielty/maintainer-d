@@ -95,9 +95,11 @@ If Flux-managed one-shot Jobs are wanted later, the supported patterns are a `Ku
 - Flux would own: everything in `deploy/manifests/`, which is 4 Deployments, 3 Services, ingress + cert-manager app resources, RBAC and 2 recurring CronJobs.
 - Manual `kubectl apply` keeps owning: the 6 one-shot Jobs in `deploy/jobs/`.
 
-### Open decision: image tag strategy
+### Image tag strategy (decided 2026-10-28: manual tag bump)
 
-Current manual flow generates a fresh `TAG` per build (branch+short-sha+date) and pushes/deploys `:latest`, decided at deploy time. Flux's GitOps model wants the desired image tag to live in git, so this needs to be resolved before (or alongside) turning Flux on:
+Image tags now live in git: `deploy/manifests/kustomization.yaml` lists every resource in the directory and pins each image's `newTag`. `make image-set TAG=<tag>` rewrites those tags and applies with `kubectl apply -k`, and the change is committed. A Flux `Kustomization` can point straight at `./deploy/manifests`; no separate base is needed, and the base listing above is now that file.
+
+The options that were weighed:
 
 - **Manual tag bump**: after building/pushing an image, edit the prod overlay's `images:` block with the new tag and commit — Flux applies the diff. Simple, no new controllers, but reintroduces a manual git-edit step into the deploy flow.
 - **Flux Image Automation** (`ImageRepository` + `ImagePolicy` + `ImageUpdateAutomation`): Flux watches the registry and writes tag bumps back to git itself. Removes the manual step but adds three new CRDs/controllers and a bot-commit pattern to reason about.
