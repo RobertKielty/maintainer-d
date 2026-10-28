@@ -1,6 +1,10 @@
-import type { NextConfig } from "next";
+// Plain JS rather than TypeScript: `next start` loads this file at runtime,
+// and the production image prunes devDependencies (including typescript).
+// Dockerfile.web copies it into the runner stage; without it the image
+// optimizer rejects every remote avatar URL.
 
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   turbopack: {
     root: process.env.TURBOPACK_ROOT || "./",

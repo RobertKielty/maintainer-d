@@ -24,5 +24,9 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
+# `next start` reads next.config.mjs at runtime; without it images.remotePatterns
+# is empty and /_next/image rejects GitHub avatars with a 400.
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
+RUN node --input-type=module -e "const { default: c } = await import('/app/next.config.mjs'); if (!c.images?.remotePatterns?.some((p) => p.hostname === 'github.com')) { console.error('next.config.mjs does not allow github.com images'); process.exit(1); }"
 EXPOSE 3000
 CMD ["npm", "run", "start"]
