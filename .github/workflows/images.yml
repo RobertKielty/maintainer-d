@@ -1,0 +1,137 @@
+name: Images
+
+# Builds every production image from main and pushes it to ghcr.io/cncf as
+# :main-<sha7> and :latest. Deploying stays a deliberate step: pin the tag with
+# `make image-set TAG=main-<sha7>` and commit deploy/manifests/kustomization.yaml.
+
+# Docs-only and deploy-only merges (including tag bumps to
+# deploy/manifests/kustomization.yaml) don't build images.
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.MD"
+      - "deploy/**"
+      - "docs/**"
+      - "specifications/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/cncf
+  # Public URL baked into the client bundle; not a secret.
+  NEXT_PUBLIC_BFF_BASE_URL: ${{ vars.NEXT_PUBLIC_BFF_BASE_URL || 'https://maintainer-d.cncf.io' }}
+
+jobs:
+  tag:
+    name: Compute tag
+    # Only main of the upstream repo publishes; forks and other branches skip.
+    if: github.repository == 'cncf/maintainer-d' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.group }}
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The six Go targets share one build stage, so they build in one job
+          # where that stage is cached after the first target.
+          - group: go
+            file: Dockerfile
+            images: >-
+              maintainerd:maintainerd
+              maintainerd-dot-project-sync:dot-project-sync
+              maintainerd-migrate:migrate
+              maintainerd-onboarding-backfill:onboarding-backfill
+              maintainerd-fossa-poller:fossa-poller
+              maintainerd-github-profile-sync:github-profile-sync
+          - group: web
+            file: Dockerfile.web
+            images: maintainerd-web:runner
+            build-args: NEXT_PUBLIC_BFF_BASE_URL
+          - group: web-bff
+            file: Dockerfile.web-bff
+            images: "maintainerd-web-bff:"  # single unnamed stage, no --target
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          FILE: ${{ matrix.file }}
+          IMAGES: ${{ matrix.images }}
+          BUILD_ARGS: ${{ matrix.build-args }}
+        run: |
+          set -euo pipefail
+          args=()
+          for arg in $BUILD_ARGS; do
+            args+=(--build-arg "${arg}=${!arg}")
+          done
+          for entry in $IMAGES; do
+            name="${entry%%:*}"
+            target="${entry#*:}"
+            echo "::group::${REGISTRY}/${name}:${TAG}"
+            # The source label links each package to this repository.
+            docker buildx build \
+              --file "$FILE" \
+              ${target:+--target "$target"} \
+              --platform linux/amd64 \
+              "${args[@]}" \
+              --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
+              --label org.opencontainers.image.revision="$GITHUB_SHA" \
+              --tag "${REGISTRY}/${name}:${TAG}" \
+              --tag "${REGISTRY}/${name}:latest" \
+              --push \
+              .
+            echo "::endgroup::"
+          done
+
+  summary:
+    name: Deploy instructions
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          {
+            echo "### Images pushed to \`${REGISTRY}\` as \`${TAG}\`"
+            echo
+            echo "Deploy from an up-to-date main checkout, then open a PR with the updated"
+            echo "\`deploy/manifests/kustomization.yaml\`:"
+            echo
+            echo '```'
+            echo "make image-set TAG=${TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
