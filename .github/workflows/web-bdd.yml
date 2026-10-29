@@ -1,8 +1,17 @@
 name: Web BDD tests
 
+# Skipped when a change touches only docs or deploy manifests. Go changes
+# still run it because the suite exercises web-bff.
 on:
   push:
+    paths-ignore: &skip
+      - "**/*.md"
+      - "**/*.MD"
+      - "deploy/**"
+      - "docs/**"
+      - "specifications/**"
   pull_request:
+    paths-ignore: *skip
 
 jobs:
   web-bdd:

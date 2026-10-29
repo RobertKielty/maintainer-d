@@ -1,16 +1,29 @@
 name: Tests
 
+# Skipped when a change touches only docs, deploy manifests or the web app
+# (web-bdd covers the web app). Any other file, including ones not listed
+# here, runs the full suite.
 on:
   push:
     branches:
       - main
       - master
       - develop
+    paths-ignore: &skip
+      - "**/*.md"
+      - "**/*.MD"
+      - "deploy/**"
+      - "docs/**"
+      - "specifications/**"
+      - "web/**"
+      - "features/**"
+      - "Dockerfile.web"
   pull_request:
     branches:
       - main
       - master
       - develop
+    paths-ignore: *skip
 
 permissions:
   contents: read
