@@ -19,7 +19,7 @@ spec:
       containers:
         - name: server
           # tag pinned by kustomization.yaml (images:); apply with -k, not -f
-          image: ghcr.io/robertkielty/maintainerd:latest
+          image: ghcr.io/cncf/maintainerd:latest
           imagePullPolicy: Always
           args:
             - "-addr=:2525"

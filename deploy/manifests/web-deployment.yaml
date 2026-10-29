@@ -19,7 +19,7 @@ spec:
       containers:
         - name: web
           # tag pinned by kustomization.yaml (images:); apply with -k, not -f
-          image: ghcr.io/robertkielty/maintainerd-web:latest
+          image: ghcr.io/cncf/maintainerd-web:latest
           imagePullPolicy: Always
           ports:
             - name: http

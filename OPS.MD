@@ -24,41 +24,41 @@ make manifests-apply
 make manifests-diff   # no output means the cluster matches git
 ```
 
+3) Verify:
+```
+kubectl -n maintainerd get pvc,deploy,svc,ing
+```
+
 ## Release new images
 
 Goal: Deploy a new build and record it in git.
 
-1) Build and push with an explicit tag:
-```
-TAG=main-$(git rev-parse --short HEAD)-$(date -u +%a-%b-%d-%Y | tr a-z A-Z)
-make images-build TAG=$TAG && make images-push TAG=$TAG
-# or a single service: make web-image-push TAG=$TAG (builds first)
-```
+1) Merge to main. The **Images** workflow (`.github/workflows/images.yml`) builds every image and pushes it to `ghcr.io/cncf/<name>` as `:main-<sha7>` and `:latest`. The run summary shows the tag. Merges that touch only docs or `deploy/` don't build.
 
-2) Pin the tag and apply:
+2) From an up-to-date main checkout, pin the tag and apply:
 ```
-make image-set TAG=$TAG            # every Deployment and CronJob
-make web-image-set TAG=$TAG        # or a single service
+make image-set TAG=main-<sha7>       # every Deployment and CronJob
+make web-image-set TAG=main-<sha7>   # or a single service
 ```
-This rewrites `newTag` in `deploy/manifests/kustomization.yaml` and runs `manifests-apply`. To prepare the change without touching the cluster, use `make image-pin TAG=$TAG`.
+This rewrites `newTag` in `deploy/manifests/kustomization.yaml` and runs `manifests-apply`. To prepare the change without touching the cluster, use `make image-pin TAG=main-<sha7>`.
 
-3) Commit `deploy/manifests/kustomization.yaml` and open a PR so git records what is running.
+3) Commit `deploy/manifests/kustomization.yaml` on a branch and open a PR so git records what is running.
 
 To roll back, revert that commit and run `make manifests-apply`.
 
-3) Verify:
+Local builds still work for emergencies and push to the same repositories (they need a token with `write:packages` on the cncf org):
 ```
-kubectl -n maintainerd get pvc,deploy,svc,ing
+TAG=main-$(git rev-parse --short HEAD)-$(date -u +%a-%b-%d-%Y | tr a-z A-Z)
+make images-build TAG=$TAG && make images-push TAG=$TAG
 ```
 
 ## Run schema migrations
 
 Goal: Apply database schema changes safely without re-importing data.
 
-1) Build and push the migrate image:
+1) Make sure the migrate image is current. CI pushes `ghcr.io/cncf/maintainerd-migrate:latest` on every merge to main that changes code, and the job uses `:latest`. To build locally instead:
 ```
-make migrate-image-build
-make migrate-image-push
+make migrate-image-push TAG=<tag>   # builds first
 ```
 
 2) Apply the migrate job manifest:
@@ -116,11 +116,12 @@ kubectl -n maintainerd run pgdump --rm -i --restart=Never \
 
 Goal: Deploy web + BFF to production.
 
-Build, push, pin and apply both images with one tag (see "Release new images" above):
+CI builds both images on merge to main (see "Release new images" above). Pin and apply them:
 ```
-make web-release TAG=<tag>
+make web-image-set TAG=main-<sha7>
+make web-bff-image-set TAG=main-<sha7>
 ```
-Then commit `deploy/manifests/kustomization.yaml`.
+Then commit `deploy/manifests/kustomization.yaml`. `make web-release TAG=<tag>` still builds and pushes both locally first.
 
 ## Manage secrets (dev vs production)
 

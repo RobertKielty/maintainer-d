@@ -25,7 +25,7 @@ spec:
         spec:
           containers:
           # tag pinned by kustomization.yaml (images:); apply with -k, not -f
-          - image: ghcr.io/robertkielty/maintainerd-dot-project-sync:latest
+          - image: ghcr.io/cncf/maintainerd-dot-project-sync:latest
             imagePullPolicy: Always
             name: dot-project-sync
             resources: {}

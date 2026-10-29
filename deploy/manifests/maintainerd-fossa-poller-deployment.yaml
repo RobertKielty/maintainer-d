@@ -33,7 +33,7 @@ spec:
       containers:
       - name: fossa-poller
         # tag pinned by kustomization.yaml (images:); apply with -k, not -f
-        image: ghcr.io/robertkielty/maintainerd-fossa-poller:latest
+        image: ghcr.io/cncf/maintainerd-fossa-poller:latest
         imagePullPolicy: Always
         args:
         - -interval=5m

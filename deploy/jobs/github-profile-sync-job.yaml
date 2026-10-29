@@ -14,7 +14,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: github-profile-sync
-        image: ghcr.io/robertkielty/maintainerd-github-profile-sync:latest
+        image: ghcr.io/cncf/maintainerd-github-profile-sync:latest
         imagePullPolicy: Always
         envFrom:
         - secretRef:

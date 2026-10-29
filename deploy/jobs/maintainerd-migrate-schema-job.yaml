@@ -14,7 +14,7 @@ spec:
       - name: ghcr-secret
       containers:
       - name: migrate
-        image: ghcr.io/robertkielty/maintainerd-migrate:latest
+        image: ghcr.io/cncf/maintainerd-migrate:latest
         imagePullPolicy: Always
         envFrom:
         - secretRef:

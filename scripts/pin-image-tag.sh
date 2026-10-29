@@ -8,7 +8,7 @@ KUSTOMIZATION="${KUSTOMIZATION:-${ROOT_DIR}/deploy/manifests/kustomization.yaml}
 
 usage() {
   echo "usage: $0 <tag> <image-repo> [<image-repo>...]" >&2
-  echo "example: $0 main-7d4bf69-WED-OCT-28-2026 ghcr.io/robertkielty/maintainerd-web" >&2
+  echo "example: $0 main-94cc6c1 ghcr.io/cncf/maintainerd-web" >&2
   exit 2
 }
 

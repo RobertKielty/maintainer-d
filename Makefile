@@ -1,5 +1,5 @@
 TOPDIR=$(PWD)
-GH_ORG_LC=robertkielty
+GH_ORG_LC=cncf
 REGISTRY ?= ghcr.io
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr '/_' '--')
@@ -68,7 +68,7 @@ GOCACHE_DIR ?= $(TOPDIR)/.gocache
 GOFMT_PATHS ?= $(shell go list -f '{{.Dir}}' ./...)
 
 # GHCR auth (optional for push). If set, we will docker login before push.
-GHCR_USER  ?= $(GH_ORG_LC)
+GHCR_USER  ?= robertkielty
 GHCR_TOKEN ?=
 
 

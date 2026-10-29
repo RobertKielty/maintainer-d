@@ -18,7 +18,7 @@ spec:
         spec:
           containers:
           # tag pinned by kustomization.yaml (images:); apply with -k, not -f
-          - image: ghcr.io/robertkielty/maintainerd-github-profile-sync:latest
+          - image: ghcr.io/cncf/maintainerd-github-profile-sync:latest
             imagePullPolicy: Always
             name: github-profile-sync
             resources:

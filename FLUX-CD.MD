@@ -133,7 +133,7 @@ resources:
   - ../../base
 # Optional patches or image overrides below
 # images:
-#   - name: ghcr.io/robertkielty/maintainerd
+#   - name: ghcr.io/cncf/maintainerd
 #     newTag: <tag>
 ```
 

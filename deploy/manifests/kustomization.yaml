@@ -25,15 +25,15 @@ resources:
 # targets rewrite newTag here (via scripts/pin-image-tag.sh) and then apply,
 # so commit this file after every deploy to keep git matching the cluster.
 images:
-  - name: ghcr.io/robertkielty/maintainerd
-    newTag: main-0afe327-TUE-OCT-27-2026
-  - name: ghcr.io/robertkielty/maintainerd-dot-project-sync
-    newTag: main-0afe327-TUE-OCT-27-2026
-  - name: ghcr.io/robertkielty/maintainerd-fossa-poller
-    newTag: main-0afe327-TUE-OCT-27-2026
-  - name: ghcr.io/robertkielty/maintainerd-github-profile-sync
-    newTag: main-0afe327-TUE-OCT-27-2026
-  - name: ghcr.io/robertkielty/maintainerd-web
-    newTag: main-7d4bf69d0b65-WED-OCT-28-2026
-  - name: ghcr.io/robertkielty/maintainerd-web-bff
-    newTag: main-0afe327-TUE-OCT-27-2026
+  - name: ghcr.io/cncf/maintainerd
+    newTag: main-94cc6c1
+  - name: ghcr.io/cncf/maintainerd-dot-project-sync
+    newTag: main-94cc6c1
+  - name: ghcr.io/cncf/maintainerd-fossa-poller
+    newTag: main-94cc6c1
+  - name: ghcr.io/cncf/maintainerd-github-profile-sync
+    newTag: main-94cc6c1
+  - name: ghcr.io/cncf/maintainerd-web
+    newTag: main-94cc6c1
+  - name: ghcr.io/cncf/maintainerd-web-bff
+    newTag: main-94cc6c1
