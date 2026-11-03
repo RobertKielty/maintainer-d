@@ -38,14 +38,22 @@ Required inputs are:
 - `MD_DB_DSN`
 - `GITHUB_API_TOKEN`
 
-Required LFX input:
+Required LFX input, one of:
 
-- `LFX_AUTH_TOKEN`
+- `LFX_CLIENT_ID` and `LFX_CLIENT_SECRET`: the LFX M2M client used by the
+  CronJob. The job mints a short-lived api-gw token with the Auth0
+  `client_credentials` grant at startup and re-mints it if it expires mid-run.
+- `LFX_AUTH_TOKEN`: a bearer token for manual runs, e.g.
+  `LFX_AUTH_TOKEN="$(lfx auth token)"` with
+  [lfx-cli](https://github.com/linuxfoundation/lfx-cli). It takes precedence
+  over the M2M client when both are set.
 
 Optional LFX inputs are:
 
 - `LFX_ACL`
 - `LFX_BASE_URL`
+- `LFX_TOKEN_URL` (default `https://sso.linuxfoundation.org/oauth/token`, M2M only)
+- `LFX_AUDIENCE` (default `https://api-gw.platform.linuxfoundation.org/`, M2M only)
 - `LFX_TIMEOUT`
 - `LFX_REQUEST_DELAY` (default `250ms`, serialized client-side throttle)
 - `LFX_MAX_LOOKUPS`
@@ -115,10 +123,10 @@ There are three main collaborators:
 - `Enricher`: writes LFX identity observations.
 - `AutoAdder`: creates or reports maintainer add/link candidates.
 
-LFX enrichment is compulsory. `buildRequiredLFXClient()` requires
-`LFX_AUTH_TOKEN`; if it is missing, the command exits before scanning projects
-and instructs the operator to refresh the token at
-`https://app.lfx.dev/settings`.
+LFX enrichment is compulsory. `buildRequiredLFXClient()` requires LFX
+credentials (see above) and logs which kind it uses (`lfx auth mode=m2m` or
+`static`). The command then calls `CheckToken()` once and exits before
+scanning projects if the credential is missing or rejected.
 
 ## Project Loop
 
@@ -339,18 +347,21 @@ operators know where to refresh the short-lived token.
 The LFX Platform is required for this job. Platform access errors stop the sync
 instead of being reported only as counters.
 
-### 1. Missing Token Fails Startup
+### 1. Missing or Rejected Credentials Fail Startup
 
-`buildRequiredLFXClient()` requires `LFX_AUTH_TOKEN`:
+`buildRequiredLFXClient()` requires either `LFX_AUTH_TOKEN` or both
+`LFX_CLIENT_ID` and `LFX_CLIENT_SECRET`, and `main()` then checks the
+credential before the project loop:
 
 ```go
-if token == "" {
-    return nil, fmt.Errorf("%s", lfxTokenHelp)
+if err := lfxClient.CheckToken(ctx); err != nil {
+    log.Fatalf("LFX credential check failed: %v", lfx.PlatformAccessError(err))
 }
 ```
 
-The error message tells the operator to update the token at
-`https://app.lfx.dev/settings`.
+The error message (`lfx.TokenHelp`) tells the operator to set the M2M client
+or pass `LFX_AUTH_TOKEN="$(lfx auth token)"`. A failure to mint an M2M token
+(`lfx.ErrTokenSource`) is fatal mid-run too, like a 401.
 
 ### 2. Enricher Errors Are Fatal
 

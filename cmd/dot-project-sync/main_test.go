@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -11,25 +12,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildRequiredLFXClientRequiresToken(t *testing.T) {
-	t.Setenv("LFX_AUTH_TOKEN", "")
+func setLFXCredentialEnv(t *testing.T, token, clientID, clientSecret string) {
+	t.Helper()
+	t.Setenv("LFX_AUTH_TOKEN", token)
+	t.Setenv("LFX_CLIENT_ID", clientID)
+	t.Setenv("LFX_CLIENT_SECRET", clientSecret)
 	t.Setenv("LFX_ACL", "")
+}
 
-	client, err := buildRequiredLFXClient()
+func TestBuildRequiredLFXClientRequiresCredentials(t *testing.T) {
+	setLFXCredentialEnv(t, "", "", "")
+
+	client, mode, err := buildRequiredLFXClient(context.Background())
 	require.Error(t, err)
 	assert.Nil(t, client)
-	assert.Contains(t, err.Error(), "https://app.lfx.dev/settings")
+	assert.Empty(t, mode)
+	assert.Contains(t, err.Error(), "LFX_CLIENT_ID")
+	assert.Contains(t, err.Error(), "lfx auth token")
 }
 
 func TestBuildRequiredLFXClientUsesToken(t *testing.T) {
-	t.Setenv("LFX_AUTH_TOKEN", "short-lived-token")
+	setLFXCredentialEnv(t, "short-lived-token", "", "")
 	t.Setenv("LFX_ACL", "acl")
 
-	client, err := buildRequiredLFXClient()
+	client, mode, err := buildRequiredLFXClient(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, client)
+	assert.Equal(t, "static", mode)
 	assert.Equal(t, "short-lived-token", client.Token)
+	assert.Nil(t, client.TokenSource)
 	assert.Equal(t, "acl", client.ACL)
+}
+
+func TestBuildRequiredLFXClientUsesClientCredentials(t *testing.T) {
+	setLFXCredentialEnv(t, "", "client-id", "client-secret")
+
+	client, mode, err := buildRequiredLFXClient(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, "m2m", mode)
+	assert.Empty(t, client.Token)
+	assert.NotNil(t, client.TokenSource)
+}
+
+func TestBuildRequiredLFXClientTokenOverridesClientCredentials(t *testing.T) {
+	setLFXCredentialEnv(t, "manual-token", "client-id", "client-secret")
+
+	client, mode, err := buildRequiredLFXClient(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "static", mode)
+	assert.Equal(t, "manual-token", client.Token)
+	assert.Nil(t, client.TokenSource)
+}
+
+func TestBuildRequiredLFXClientRejectsPartialClientCredentials(t *testing.T) {
+	for name, env := range map[string][2]string{
+		"id only":     {"client-id", ""},
+		"secret only": {"", "client-secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setLFXCredentialEnv(t, "", env[0], env[1])
+
+			client, _, err := buildRequiredLFXClient(context.Background())
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.Contains(t, err.Error(), "must both be set")
+		})
+	}
 }
 
 func TestBuildLFXClientDefaultRequestDelay(t *testing.T) {

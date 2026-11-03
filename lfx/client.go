@@ -12,19 +12,40 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 const DefaultBaseURL = "https://api-gw.platform.linuxfoundation.org"
-const TokenRefreshURL = "https://app.lfx.dev/settings" //nolint:gosec // public settings page URL, not a credential
+
+// DefaultTokenURL and DefaultAudience mint an api-gw token for an LFX M2M
+// client via the Auth0 client_credentials grant. The audience must be the
+// api-gw one, not the V2 platform's (https://lfx-api.v2.cluster.lfx.dev/).
+const DefaultTokenURL = "https://sso.linuxfoundation.org/oauth/token" //nolint:gosec // public token endpoint URL, not a credential
+const DefaultAudience = "https://api-gw.platform.linuxfoundation.org/"
+
+// TokenHelp tells an operator how to get working LFX credentials. The
+// app.lfx.dev settings-page token is deliberately not mentioned: LFX asks
+// that it not be used, and `lfx auth token` issues the same thing.
+const TokenHelp = "set LFX_CLIENT_ID and LFX_CLIENT_SECRET (M2M client) or LFX_AUTH_TOKEN=\"$(lfx auth token)\" (https://github.com/linuxfoundation/lfx-cli)" //nolint:gosec // operator help text naming env vars, not a credential
+
+// ErrTokenSource marks a failure to obtain a bearer token from
+// Client.TokenSource, e.g. a wrong client secret or an unreachable token
+// endpoint. No request reached the LFX API in that case.
+var ErrTokenSource = errors.New("LFX token request failed")
 
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      string
-	ACL        string
-	Username   string
-	Email      string
-	MinDelay   time.Duration
+	// TokenSource, when set, supplies the bearer token for every request
+	// and takes precedence over Token.
+	TokenSource oauth2.TokenSource
+	ACL         string
+	Username    string
+	Email       string
+	MinDelay    time.Duration
 
 	mu          sync.Mutex
 	lastRequest time.Time
@@ -55,6 +76,10 @@ func PlatformAccessError(err error) error {
 	}
 	var httpErr *HTTPStatusError
 	switch {
+	case errors.Is(err, ErrTokenSource):
+		// Every remaining request would need the same token, so a run
+		// cannot make progress without one.
+		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform access failed (could not obtain a token); %s: %w", TokenHelp, err)}
 	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized:
 		// A dead token (401) and a rate limit (429) are marked fatal to a
 		// sync run: every remaining project would hit the same wall, so
@@ -63,9 +88,9 @@ func PlatformAccessError(err error) error {
 		// issue #150's verified behavior is that a mid-run LFX-path 403 does
 		// not kill the run. Timeouts, 5xx and transport errors below are
 		// ordinary per-project errors too.
-		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform access failed (HTTP 401, invalid or expired token); update LFX_AUTH_TOKEN with a fresh token from %s: %w", TokenRefreshURL, err)}
+		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform access failed (HTTP 401, invalid or expired token); %s: %w", TokenHelp, err)}
 	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("LFX Platform denied this request (HTTP 403); the token may lack access to this resource (X-ACL scope) or be expired - check LFX_AUTH_TOKEN and LFX_ACL, refresh at %s: %w", TokenRefreshURL, err)
+		return fmt.Errorf("LFX Platform denied this request (HTTP 403); the token may lack access to this resource (X-ACL scope) or be expired - check LFX_ACL; %s: %w", TokenHelp, err)
 	case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests:
 		return dotproject.FatalSyncError{Err: fmt.Errorf("LFX Platform rate limited this request (HTTP 429); not a token problem, back off LFX_REQUEST_DELAY: %w", err)}
 	case errors.As(err, &httpErr):
@@ -237,6 +262,13 @@ func (c *Client) get(ctx context.Context, path string, values url.Values, target
 		return err
 	}
 	c.addHeaders(req)
+	if c.TokenSource != nil {
+		token, err := c.TokenSource.Token()
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrTokenSource, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
 
 	if err := c.wait(ctx); err != nil {
 		return err
@@ -266,6 +298,25 @@ func (c *Client) get(ctx context.Context, path string, values url.Values, target
 		return fmt.Errorf("decode %s: %w", endpoint.String(), err)
 	}
 	return nil
+}
+
+// NewClientCredentialsTokenSource returns a token source for an LFX M2M
+// client. It caches the access token and mints a new one when it expires,
+// so a run longer than the token lifetime keeps working. ctx bounds every
+// token request; httpClient, when non-nil, sends them, so its timeout
+// applies (oauth2 otherwise uses http.DefaultClient, which has none).
+func NewClientCredentialsTokenSource(ctx context.Context, httpClient *http.Client, clientID, clientSecret, tokenURL, audience string) oauth2.TokenSource {
+	if httpClient != nil {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+	}
+	cfg := clientcredentials.Config{
+		ClientID:       clientID,
+		ClientSecret:   clientSecret,
+		TokenURL:       tokenURL,
+		EndpointParams: url.Values{"audience": {audience}},
+		AuthStyle:      oauth2.AuthStyleInParams,
+	}
+	return cfg.TokenSource(ctx)
 }
 
 func (c *Client) wait(ctx context.Context) error {

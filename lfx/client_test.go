@@ -284,6 +284,7 @@ func TestPlatformAccessErrorClassifiesFatality(t *testing.T) {
 		{name: "500 is not fatal", err: &HTTPStatusError{StatusCode: http.StatusInternalServerError, Status: "500 Internal Server Error"}, fatal: false},
 		{name: "timeout is not fatal", err: fmt.Errorf("request: %w", context.DeadlineExceeded), fatal: false},
 		{name: "transport error is not fatal", err: errors.New("connection reset by peer"), fatal: false},
+		{name: "token source failure is fatal", err: fmt.Errorf("%w: invalid_client", ErrTokenSource), fatal: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -297,4 +298,72 @@ func TestPlatformAccessErrorClassifiesFatality(t *testing.T) {
 			assert.ErrorContains(t, classified, "LFX Platform")
 		})
 	}
+}
+
+func TestClientCredentialsTokenSourceAuthenticatesRequests(t *testing.T) {
+	t.Parallel()
+
+	var tokenRequests int
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenRequests++
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "client_credentials", r.PostForm.Get("grant_type"))
+		assert.Equal(t, "client-id", r.PostForm.Get("client_id"))
+		assert.Equal(t, "client-secret", r.PostForm.Get("client_secret"))
+		assert.Equal(t, DefaultAudience, r.PostForm.Get("audience"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":10800}`))
+	}))
+	defer tokenServer.Close()
+
+	var gotAuth []string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"Data":[]}`))
+	}))
+	defer apiServer.Close()
+
+	client := &Client{
+		BaseURL:     apiServer.URL,
+		HTTPClient:  apiServer.Client(),
+		Token:       "ignored-static-token",
+		TokenSource: NewClientCredentialsTokenSource(context.Background(), tokenServer.Client(), "client-id", "client-secret", tokenServer.URL, DefaultAudience),
+	}
+
+	require.NoError(t, client.CheckToken(context.Background()))
+	require.NoError(t, client.CheckToken(context.Background()))
+	assert.Equal(t, []string{"Bearer minted-token", "Bearer minted-token"}, gotAuth)
+	assert.Equal(t, 1, tokenRequests, "an unexpired token must be reused, not re-minted per request")
+}
+
+func TestClientCredentialsTokenSourceFailureIsFatal(t *testing.T) {
+	t.Parallel()
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"Unauthorized"}`))
+	}))
+	defer tokenServer.Close()
+
+	var apiCalls int
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		apiCalls++
+	}))
+	defer apiServer.Close()
+
+	client := &Client{
+		BaseURL:     apiServer.URL,
+		HTTPClient:  apiServer.Client(),
+		TokenSource: NewClientCredentialsTokenSource(context.Background(), tokenServer.Client(), "client-id", "wrong-secret", tokenServer.URL, DefaultAudience),
+	}
+
+	err := client.CheckToken(context.Background())
+	require.ErrorIs(t, err, ErrTokenSource)
+	assert.Zero(t, apiCalls, "no API request may be sent without a token")
+
+	var fatal dotproject.FatalSyncError
+	assert.True(t, errors.As(PlatformAccessError(err), &fatal))
+	assert.NotContains(t, err.Error(), "wrong-secret")
 }

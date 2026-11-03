@@ -52,8 +52,6 @@ type syncConfig struct {
 	GistDescription    string `json:"gist_description"`
 }
 
-const lfxTokenHelp = "LFX Platform access failed; update LFX_AUTH_TOKEN with a fresh token from " + lfx.TokenRefreshURL
-
 func main() {
 	cfg := parseFlags()
 	log.Printf("dot-project sync config=%s", configJSON(cfg))
@@ -101,9 +99,15 @@ func main() {
 		log.Printf("foundation csv load failed: %v", foundationErr)
 	}
 
-	lfxClient, err := buildRequiredLFXClient()
+	lfxClient, lfxAuthMode, err := buildRequiredLFXClient(ctx)
 	if err != nil {
 		log.Fatal(err)
+	}
+	log.Printf("lfx auth mode=%s", lfxAuthMode)
+	// Fail before scanning any project if the credential is unusable, rather
+	// than discovering it on the first maintainer lookup.
+	if err := lfxClient.CheckToken(ctx); err != nil {
+		log.Fatalf("LFX credential check failed: %v", lfx.PlatformAccessError(err))
 	}
 
 	syncer := &dotproject.Syncer{
@@ -351,13 +355,28 @@ func buildLFXEnricher(store *db.SQLStore, client lfx.UserSearcher) dotproject.Ma
 	}}
 }
 
-func buildRequiredLFXClient() (*lfx.Client, error) {
+// buildRequiredLFXClient picks the LFX credential and reports which one
+// ("static" or "m2m") for the run log. LFX_AUTH_TOKEN is a manual override,
+// e.g. LFX_AUTH_TOKEN="$(lfx auth token)"; unattended CronJob runs use the
+// LFX_CLIENT_ID/LFX_CLIENT_SECRET M2M client, which mints its own token.
+func buildRequiredLFXClient(ctx context.Context) (*lfx.Client, string, error) {
 	token := strings.TrimSpace(os.Getenv("LFX_AUTH_TOKEN"))
 	acl := strings.TrimSpace(os.Getenv("LFX_ACL"))
-	if token == "" {
-		return nil, fmt.Errorf("%s", lfxTokenHelp)
+	clientID := strings.TrimSpace(os.Getenv("LFX_CLIENT_ID"))
+	clientSecret := strings.TrimSpace(os.Getenv("LFX_CLIENT_SECRET"))
+	switch {
+	case token != "":
+		return buildLFXClient(token, acl), "static", nil
+	case clientID != "" && clientSecret != "":
+		client := buildLFXClient("", acl)
+		client.TokenSource = lfx.NewClientCredentialsTokenSource(ctx, client.HTTPClient, clientID, clientSecret,
+			envOr("LFX_TOKEN_URL", lfx.DefaultTokenURL), envOr("LFX_AUDIENCE", lfx.DefaultAudience))
+		return client, "m2m", nil
+	case clientID != "" || clientSecret != "":
+		return nil, "", fmt.Errorf("LFX_CLIENT_ID and LFX_CLIENT_SECRET must both be set; %s", lfx.TokenHelp)
+	default:
+		return nil, "", fmt.Errorf("LFX credentials are required; %s", lfx.TokenHelp)
 	}
-	return buildLFXClient(token, acl), nil
 }
 
 func buildLFXClient(token, acl string) *lfx.Client {

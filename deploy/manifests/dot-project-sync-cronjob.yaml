@@ -5,11 +5,10 @@ metadata:
   namespace: maintainerd
 spec:
   schedule: "0 * * * *"
-  # LFX_AUTH_TOKEN expires in hours and is never stored in the server secret
-  # (see maintainerd-server-env.yaml.tmpl), so an unattended hourly run would
-  # crash-loop on a missing token every time. Keep suspended until LFX
-  # provisions a renewable M2M credential; until then, dot-project-sync is
-  # run manually with a pasted per-session token.
+  # The job authenticates to LFX with the M2M client in maintainerd-server-env
+  # (LFX_CLIENT_ID/LFX_CLIENT_SECRET) and mints its own short-lived token each
+  # run. Still suspended until a one-off run from this CronJob has verified the
+  # M2M credential in-cluster; un-suspend in a separate PR after that.
   suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
